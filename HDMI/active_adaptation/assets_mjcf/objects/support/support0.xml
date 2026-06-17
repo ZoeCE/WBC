@@ -1,0 +1,11 @@
+<mujoco model="support0">
+  <compiler angle="radian" />
+  
+  <worldbody>
+   <body name="support0" pos="0 0 0">
+
+      <freejoint name="support0_root" />
+      <geom type="box" size="0.1 0.1 0.02" pos="0 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>

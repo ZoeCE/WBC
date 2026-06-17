@@ -1,0 +1,89 @@
+<?xml version="1.0"?>
+<robot name="stool">
+  
+  <!-- Materials -->
+  <material name="white_wood">
+    <color rgba="0.04 0.04 0.04 1.0"/>
+  </material>
+  
+  <!-- Single link containing all geometry -->
+  <link name="stool">
+    <!-- Seat -->
+    <visual>
+      <origin xyz="0 0 -0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.25 0.35 0.04"/>
+      </geometry>
+      <material name="white_wood"/>
+    </visual>
+    
+    <collision>
+      <origin xyz="0 0 -0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.25 0.35 0.04"/>
+      </geometry>
+    </collision>
+    
+    <!-- Leg 1 -->
+    <visual>
+      <origin xyz="0.105 0.155 -0.1" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04 0.04 0.2"/>
+      </geometry>
+      <material name="white_wood"/>
+    </visual>
+    
+    <collision>
+      <origin xyz="0.105 0.155 -0.1" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04 0.04 0.2"/>
+      </geometry>
+    </collision>
+    
+    <!-- Leg 2 -->
+    <visual>
+      <origin xyz="-0.105 0.155 -0.1" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04 0.04 0.2"/>
+      </geometry>
+      <material name="white_wood"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.105 0.155 -0.1" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04 0.04 0.2"/>
+      </geometry>
+    </collision> 
+
+    <!-- Leg 3 -->
+    <visual>
+      <origin xyz="0.105 -0.155 -0.1" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04 0.04 0.2"/>
+      </geometry>
+      <material name="white_wood"/>
+    </visual>
+    <collision>
+      <origin xyz="0.105 -0.155 -0.1" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04 0.04 0.2"/>
+      </geometry>
+    </collision>
+
+    <!-- Leg 4 -->
+    <visual>
+      <origin xyz="-0.105 -0.155 -0.1" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04 0.04 0.2"/>
+      </geometry>
+      <material name="white_wood"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.105 -0.155 -0.1" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04 0.04 0.2"/>
+      </geometry>
+    </collision>    
+  </link>
+
+</robot>
