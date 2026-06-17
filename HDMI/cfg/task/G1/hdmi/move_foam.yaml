@@ -1,0 +1,51 @@
+# @package task
+defaults:
+  - base/hdmi-base
+  - _self_
+
+name: G1TrackFoam
+
+viewer:
+  lookat: [0., 1., 0.]
+  eye: [4.0, -1.0, 2.0]
+
+robot:
+  name: g1
+  robot_type: g1_29dof_rubberhand-feet_box-eef_box-body_capsule
+  override_params:
+    init_state:
+      joint_pos:
+        left_wrist_yaw_joint: -0.4
+        right_wrist_yaw_joint: 0.4
+    actuators:
+      arms:
+        stiffness:
+          ".*_wrist_roll_joint": 4.0
+          ".*_wrist_pitch_joint": 4.0
+          ".*_wrist_yaw_joint": 4.0
+
+command:
+  data_path: data/motion/data_for_sim/move_foam-climb-0825-2-0_580
+  root_body_name: "pelvis"
+
+  extra_object_names: ["stool_support"]
+  object_asset_name: "foam"
+  object_body_name:  "foam"
+
+  contact_target_pos_offset:
+    - [0.0, 0.21, -0.1]  # left wrist
+    - [0.0,-0.21, -0.1]  # right wrist
+  contact_eef_pos_offset:
+    - [0.0, 0.0, 0.0]  # left wrist
+    - [0.0, 0.0, 0.0]  # right wrist
+
+randomization:
+  object_body_randomization:
+    static_dynamic_friction_ratio_range: [1.0, 2.0]
+    dynamic_friction_range: [0.3, 0.8]
+    restitution_range: [0.0, 0.2]
+    mass_range: [0.9, 1.2]
+  
+  body_scale:
+    name: "foam"
+    scale_range: [0.9, 1.1]

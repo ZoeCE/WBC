@@ -1,0 +1,26 @@
+Metadata-Version: 2.4
+Name: active_adaptation
+Version: 0.0.0
+Author: btx0424@SUSTech,Haoyang Weng
+Keywords: robotics,rl
+Requires-Dist: hydra-core
+Requires-Dist: omegaconf
+Requires-Dist: wandb
+Requires-Dist: moviepy
+Requires-Dist: imageio
+Requires-Dist: einops
+Requires-Dist: av
+Requires-Dist: pandas
+Requires-Dist: termcolor
+Requires-Dist: setproctitle
+Requires-Dist: pygame
+Requires-Dist: mujoco
+Requires-Dist: xxhash
+Requires-Dist: onnxscript==0.3.0
+Requires-Dist: onnxruntime==1.22.0
+Requires-Dist: torch==2.7.0
+Requires-Dist: torchrl==0.7.0
+Requires-Dist: tensordict==0.7.0
+Dynamic: author
+Dynamic: keywords
+Dynamic: requires-dist

@@ -1,0 +1,67 @@
+# @package task
+defaults:
+  - base/hdmi-base
+  - _self_
+
+name: G1OpenFoldchairSit
+
+viewer:
+  lookat: [0.5, 0.0, 0.5]
+  eye: [1.0, -2.5, 1.5]
+
+robot:
+  name: g1
+  robot_type: g1_29dof_rubberhand-feet_box-eef_box-body_capsule
+
+command:
+  data_path: data/motion/g1/multi_motion_0726/open_chair_and_sit_amass
+  root_body_name: "pelvis"
+
+  object_asset_name: "foldchair"
+  object_body_name:  "seat_link"
+  object_joint_name: "foldchair_joint"
+
+  object_pose_range:
+    roll: [-0.0, 0.0]
+    pitch: [-0.0, 0.0]
+  object_init_joint_pos_noise: 0.0
+  object_init_joint_vel_noise: 0.0
+
+  contact_target_pos_offset:
+    - [0.28, -0.1, 0.02]  # left wrist
+    - [0.28, 0.1, 0.02]   # right wrist
+
+observation:
+  priv:
+    object_joint_pos:    {}
+    object_joint_vel:    {}
+    object_joint_torque: {}
+
+randomization:
+  object_joint_randomization:
+    armature_range: [0.0, 0.01]
+
+    friction_range: [5, 10]
+    damping_range: [1, 5]
+
+  object_body_randomization:
+    static_dynamic_friction_ratio_range: [1.0, 2.0]
+    dynamic_friction_range: [0.3, 0.8]
+    restitution_range: [0.0, 0.2]
+    mass_range: [2.0, 5.0]
+  
+  body_scale:
+    name: "foldchair"
+    scale_range: [0.9, 1.1]
+
+reward:
+  object_tracking:
+    object_pos_tracking: {enabled: false}
+    object_ori_tracking: {enabled: false}
+    object_joint_pos_tracking: {weight: 1.0, sigma: 0.5}
+
+termination:
+  cum_object_pos_error:     {min_steps: 5000}
+  cum_object_ori_error:     {min_steps: 5000}
+
+  cum_lost_contact_steps:   {min_steps: 200, pos_thres: 0.2, frc_thres: 1.0}

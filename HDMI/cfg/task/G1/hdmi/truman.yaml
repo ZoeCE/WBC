@@ -1,0 +1,67 @@
+# @package task
+defaults:
+  - base/hdmi-base
+  - _self_
+
+name: G1Truman
+
+viewer:
+  env_spacing: 5.0
+  resolution: [1280, 720]
+  lookat: [-1., 0., 0.8]
+  eye: [-2, 5, 2]
+
+terrain: plane
+
+max_episode_length: 4000
+
+robot:
+  name: g1
+  robot_type: g1_29dof_rubberhand-feet_box-eef_box-body_capsule
+  override_params:
+    spawn:
+      enabled_self_collisions: true
+
+command:
+  data_path: data/motion/data_for_sim/combo-2
+  root_body_name: "pelvis"
+
+  pose_range:
+    x: [-0.1, 0.1]
+    y: [-0.1, 0.1]
+    yaw: [-0.1, 0.1]
+
+  object_asset_name: "stair"
+  object_body_name:  "stair"
+
+  object_pose_range:
+    z: [-0.0, 0.0]
+    roll: [-0.0, 0.0]
+    pitch: [-0.0, 0.0]
+
+  contact_eef_pos_offset:
+    - [0.05, 0.0, 0.0]
+    - [0.05, 0.0, 0.0]
+  contact_target_pos_offset:
+    - [0.0, -0.2, 0.65] # left hand
+    - [0.3, -0.2, 0.65]   # right hand
+
+randomization:
+  object_body_randomization:
+    static_dynamic_friction_ratio_range: [1.0, 2.0]
+    dynamic_friction_range: [0.8, 1.2]
+    restitution_range: [0.0, 0.2]
+    mass_range: [20.0, 40.0]
+  
+  body_scale:
+    name: "stair"
+    scale_range: [0.98, 1.02]
+
+reward:
+  loco:
+    feet_stumble:           {weight: 1.0, enabled: true, body_names: ".*ankle_roll_link"}
+
+
+termination:
+  cum_body_z_error:         {body_names: "torso_link",  min_steps: 25, threshold: 0.2}
+  cum_lost_contact_steps:   {min_steps: 1000}

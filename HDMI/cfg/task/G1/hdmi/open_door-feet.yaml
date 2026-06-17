@@ -1,0 +1,73 @@
+# @package task
+defaults:
+  - base/hdmi-base
+  - _self_
+
+name: G1OpenDoorFeet
+
+viewer:
+  env_spacing: 5.0
+  eye: [-6.0, 6.0, 3.0]
+
+terrain: plane
+
+robot:
+  name: g1
+  robot_type: g1_29dof_rubberhand-feet_box-eef_box-body_capsule
+
+command:
+  data_path: data/motion/data_for_sim/open_door-feet-0828
+  root_body_name: "pelvis"
+
+  pose_range:
+    x: [-0.2, 0.2]
+    y: [-0.2, 0.2]
+    yaw: [-0.1, 0.1]
+
+  object_asset_name: "door"
+  object_body_name:  "door_panel"
+  object_joint_name: "door_joint"
+
+  object_pose_range:
+    z: [-0.0, 0.0]
+    roll: [-0.0, 0.0]
+    pitch: [-0.0, 0.0]
+
+  contact_eef_body_name: ["left_ankle_roll_link"]
+  contact_eef_pos_offset:
+    - [0.05, 0.0, 0.0] # left ankle
+  contact_target_pos_offset:
+    - [0.0, -0.75, 0.1] # left ankle
+
+observation:
+  priv:
+    object_joint_pos:    {}
+    object_joint_vel:    {}
+    object_joint_torque: {}
+
+randomization:
+  object_joint_randomization:
+    armature_range: [0.0, 0.01]
+
+    friction_range: [5, 10]
+    damping_range: [1, 5]
+
+  object_body_randomization:
+    static_dynamic_friction_ratio_range: [1.0, 2.0]
+    dynamic_friction_range: [0.3, 0.8]
+    restitution_range: [0.0, 0.2]
+    mass_range: [5.0, 20.0]
+  
+  body_scale:
+    name: "door"
+    scale_range: [0.9, 1.1]
+
+reward:
+  object_tracking:
+    object_pos_tracking: {enabled: false}
+    object_ori_tracking: {enabled: false}
+    object_joint_pos_tracking: {weight: 1.0, sigma: 0.5}
+
+termination:
+  cum_object_pos_error:     {min_steps: 5000}
+  cum_object_ori_error:     {min_steps: 5000}

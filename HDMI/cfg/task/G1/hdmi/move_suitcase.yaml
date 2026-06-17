@@ -1,0 +1,61 @@
+# @package task
+defaults:
+  - base/hdmi-base
+  - _self_
+
+name: G1TrackSuitcase
+
+viewer:
+  # show retarget motion
+  lookat: [0., -1., 0.5]
+  eye: [2., -3, 2.]
+
+  # show training
+  # lookat: [0., 0., 0.]
+  # eye: [2.0, 2.0, 2.0]
+
+  # show ref contact pos
+  # lookat: [0., 1., 0.]
+  # eye: [0., -2., 1.]
+
+max_episode_length: 500
+
+robot:
+  name: g1
+  robot_type: g1_29dof_rubberhand-feet_sphere-eef_box-body_capsule
+  override_params:
+    init_state:
+      joint_pos:
+        left_wrist_yaw_joint: -0.4
+        right_wrist_yaw_joint: 0.4
+    # actuators:
+    #   arms:
+    #     stiffness:
+    #       ".*_wrist_roll_joint": 4.0
+    #       ".*_wrist_pitch_joint": 4.0
+    #       ".*_wrist_yaw_joint": 4.0
+
+command:
+  data_path: data/motion/g1/omomo/sub1_suitcase_011
+  root_body_name: "pelvis"
+
+  object_asset_name: "suitcase"
+  object_body_name:  "suitcase"
+
+  contact_target_pos_offset:
+    - [-0.1, 0.18, 0.25]  # left wrist
+    - [-0.1,-0.18, 0.25]  # right wrist
+  contact_eef_pos_offset:
+    - [0.05, 0.0, 0.0]  # left wrist
+    - [0.05, 0.0, 0.0]  # right wrist
+
+randomization:
+  object_body_randomization:
+    static_dynamic_friction_ratio_range: [1.0, 2.0]
+    dynamic_friction_range: [0.3, 0.8]
+    restitution_range: [0.0, 0.2]
+    mass_range: [1.2, 1.8]
+  
+  body_scale:
+    name: "suitcase"
+    scale_range: [0.9, 1.1]

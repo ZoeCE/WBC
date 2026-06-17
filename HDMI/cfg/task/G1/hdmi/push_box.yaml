@@ -1,0 +1,41 @@
+# @package task
+defaults:
+  - base/hdmi-base
+  - _self_
+
+name: G1PushBox
+
+viewer:
+  lookat: [0., 3., 0.5]
+  # eye: [2., 5., 2.]
+  eye: [3., 6., 2.]
+
+robot:
+  name: g1
+  robot_type: g1_29dof_nohand-feet_sphere-eef_L-body_capsule
+
+command:
+  data_path: data/motion/g1/push_box/push_box-VID_20250423_220958-light-high-adjust_root_height
+  root_body_name: "pelvis"
+
+  object_asset_name: "box"
+  object_body_name:  "box"
+
+  contact_target_pos_offset:
+    - [0.0,-0.2, 0.8]  # left wrist
+    - [0.0, 0.2, 0.8]  # right wrist
+
+  contact_eef_pos_offset:
+    - [0.1, 0.0, 0.0]
+    - [0.1, 0.0, 0.0]
+
+randomization:
+  object_body_randomization:
+    static_dynamic_friction_ratio_range: [1.2, 2.0]
+    dynamic_friction_range: [0.4, 0.6]
+    restitution_range: [0.0, 0.2]
+    mass_range: [6.0, 12.0]
+  
+  body_scale:
+    name: "box"
+    scale_range: [0.9, 1.1]

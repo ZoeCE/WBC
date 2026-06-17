@@ -1,0 +1,51 @@
+# @package task
+defaults:
+  - base/hdmi-base
+  - _self_
+
+name: G1TrackStool
+
+viewer:
+  lookat: [1., 0., 0.]
+  eye: [2, 4, 3]
+
+robot:
+  name: g1
+  robot_type: g1_29dof_rubberhand-feet_box-eef_box-body_capsule
+  override_params:
+    init_state:
+      joint_pos:
+        left_wrist_yaw_joint: -0.4
+        right_wrist_yaw_joint: 0.4
+        
+command:
+  data_path: data/motion/data_for_sim/move_stool-climb-0814
+  root_body_name: "pelvis"
+
+  object_asset_name: "stool"
+  object_body_name:  "stool"
+
+  contact_target_pos_offset:
+    - [0.0, 0.27, -0.05]  # left wrist
+    - [0.0,-0.27, -0.05]  # right wrist
+  contact_eef_pos_offset:
+    - [0.05, 0.0, 0.0]  # left wrist
+    - [0.05, 0.0, 0.0]  # right wrist
+
+randomization:
+  object_body_randomization:
+    static_dynamic_friction_ratio_range: [1.0, 2.0]
+    dynamic_friction_range: [0.3, 0.8]
+    restitution_range: [0.0, 0.2]
+    mass_range: [1.5, 3.0]
+  
+  body_scale:
+    name: "stool"
+    scale_range: [0.9, 1.1]
+
+# reward:
+#   object_tracking:
+#     eef_contact_exp: {pos_sigma: 0.5, frc_sigma: 30.0, frc_thres: [0.0, 10., 0.0], gain: 5.0}
+
+termination:
+  cum_body_z_error:         {body_names: "torso_link",  min_steps: 25, threshold: 0.3}
