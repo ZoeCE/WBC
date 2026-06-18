@@ -24,6 +24,16 @@ def _load_train_module():
     return module
 
 
+def _load_train_sequential_module():
+    script_path = ROOT / "scripts/train_sequential.py"
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    spec = importlib.util.spec_from_file_location("train_sequential_script_for_backend_test", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_play_module():
     script_path = ROOT / "scripts/play.py"
     if str(ROOT) not in sys.path:
@@ -82,6 +92,11 @@ def test_train_config_declares_backend_override_key():
     assert cfg["backend"] == "isaac"
 
 
+def test_train_sequential_config_declares_backend_override_key():
+    cfg = yaml.safe_load((ROOT / "cfg/train_sequential.yaml").read_text())
+    assert cfg["backend"] == "isaac"
+
+
 def test_play_config_declares_backend_override_key():
     cfg = yaml.safe_load((ROOT / "cfg/play.yaml").read_text())
     assert cfg["backend"] == "isaac"
@@ -96,6 +111,20 @@ def test_mujoco_backend_sets_backend_without_launching_isaac_app():
     aa.set_backend("isaac")
     script = _load_train_module()
     cfg = OmegaConf.create({"backend": "mujoco", "app": {"headless": True}})
+
+    try:
+        simulation_app = script._configure_backend_and_app(cfg)
+
+        assert simulation_app is None
+        assert aa.get_backend() == "mujoco"
+    finally:
+        aa.set_backend("isaac")
+
+
+def test_train_sequential_mujoco_backend_sets_backend_without_launching_isaac_app():
+    aa.set_backend("isaac")
+    script = _load_train_sequential_module()
+    cfg = OmegaConf.create({"backend": "mujoco", "app": {"headless": True, "enable_cameras": False}})
 
     try:
         simulation_app = script._configure_backend_and_app(cfg)
@@ -269,6 +298,42 @@ def _run_train_script_smoke(tmp_path, task: str, run_name: str):
     return result
 
 
+def _run_train_sequential_script_smoke(tmp_path, task: str, run_name: str):
+    run_dir = tmp_path / run_name
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/train_sequential.py"),
+        "backend=mujoco",
+        "stages=[ppo]",
+        f"task={task}",
+        "task.num_envs=1",
+        "task.max_episode_length=4",
+        "task.viewer.env_spacing=0",
+        "algo.train_every=2",
+        "algo.ppo_epochs=1",
+        "algo.num_minibatches=1",
+        "total_frames=2",
+        "save_interval=-1",
+        "wandb.mode=disabled",
+        "eval_render=false",
+        f"hydra.run.dir={run_dir}",
+    ]
+    env = {
+        **os.environ,
+        "WANDB_SILENT": "true",
+    }
+
+    return subprocess.run(
+        command,
+        cwd=ROOT.parent,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=240,
+    )
+
+
 def test_mujoco_train_script_runs_minimal_ppo_loop(tmp_path):
     result = _run_train_script_smoke(tmp_path, "G1/tracking/walk", "mujoco-train-smoke")
 
@@ -281,3 +346,39 @@ def test_mujoco_object_train_script_runs_minimal_ppo_loop(tmp_path):
 
     assert result.returncode == 0, result.stdout[-4000:]
     assert "Average inference time" in result.stdout
+
+
+def test_train_sequential_script_propagates_child_failure(tmp_path):
+    run_dir = tmp_path / "mujoco-train-sequential-child-failure"
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/train_sequential.py"),
+        "backend=not-a-backend",
+        "stages=[ppo]",
+        "task=G1/tracking/walk",
+        "task.num_envs=1",
+        "total_frames=2",
+        "wandb.mode=disabled",
+        f"hydra.run.dir={run_dir}",
+    ]
+
+    result = subprocess.run(
+        command,
+        cwd=ROOT.parent,
+        env={**os.environ, "WANDB_SILENT": "true"},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=120,
+    )
+
+    assert result.returncode != 0, result.stdout[-4000:]
+    assert "exited with code" in result.stdout
+    assert "All training stages completed successfully" not in result.stdout
+
+
+def test_mujoco_train_sequential_script_runs_single_stage(tmp_path):
+    result = _run_train_sequential_script_smoke(tmp_path, "G1/hdmi/push_box", "mujoco-train-sequential-smoke")
+
+    assert result.returncode == 0, result.stdout[-4000:]
+    assert "COMPLETED STAGE 1/1" in result.stdout

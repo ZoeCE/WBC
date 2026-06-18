@@ -19,7 +19,6 @@ from setproctitle import setproctitle
 from hydra import compose
 
 import active_adaptation as aa
-from isaaclab.app import AppLauncher
 # from active_adaptation.utils.torchrl import SyncDataCollector
 from torchrl.envs.utils import set_exploration_type, ExplorationType
 from tensordict.nn import TensorDictModuleBase
@@ -38,16 +37,27 @@ FILE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(FILE_PATH, "..", "cfg")
 
 
-def run_training_stage(cfg: DictConfig, return_queue: multiprocessing.Queue = None) -> str:
-    OmegaConf.set_struct(cfg, False)
-    
-    print(f"is_distributed: {aa.is_distributed()}, local_rank: {aa.get_local_rank()}/{aa.get_world_size()}")
+def _configure_backend_and_app(cfg: DictConfig):
+    backend = cfg.get("backend", aa.get_backend())
+    aa.set_backend(backend)
+    if backend == "mujoco":
+        return None
+
+    from isaaclab.app import AppLauncher
+
     app_launcher = AppLauncher(
         OmegaConf.to_container(cfg.app),
         distributed=aa.is_distributed(),
-        device=f"cuda:{aa.get_local_rank()}"
+        device=f"cuda:{aa.get_local_rank()}",
     )
-    simulation_app = app_launcher.app
+    return app_launcher.app
+
+
+def run_training_stage(cfg: DictConfig, return_queue: multiprocessing.Queue = None) -> str:
+    OmegaConf.set_struct(cfg, False)
+
+    print(f"is_distributed: {aa.is_distributed()}, local_rank: {aa.get_local_rank()}/{aa.get_world_size()}")
+    simulation_app = _configure_backend_and_app(cfg)
 
     run = wandb.init(
         job_type=cfg.wandb.job_type,
@@ -56,11 +66,12 @@ def run_training_stage(cfg: DictConfig, return_queue: multiprocessing.Queue = No
         tags=cfg.wandb.tags,
     )
     run.config.update(OmegaConf.to_container(cfg))
-    
+
     default_run_name = f"{cfg.exp_name}-{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')}"
     run_idx = run.name.split("-")[-1]
     run.name = f"{run_idx}-{default_run_name}"
     setproctitle(run.name)
+    os.makedirs(run.dir, exist_ok=True)
 
     cfg_save_path = os.path.join(run.dir, "cfg.yaml")
     OmegaConf.save(cfg, cfg_save_path)
@@ -208,15 +219,18 @@ def run_training_stage(cfg: DictConfig, return_queue: multiprocessing.Queue = No
         print(f"Child process sending run_path to parent: {run_path}")
         return_queue.put(run_path)
 
-    # Clean up wandb and Isaac Sim, then force exit
-    # The original 'return' statement is now unreachable but kept for clarity.
     print("Finishing W&B run and preparing to exit process.")
     wandb.finish()
-    
+
+    if simulation_app is None:
+        env.close()
+        print(f"Child process for stage {cfg.algo.name} completed cleanly.")
+        return run_path
+
     # Due to an Isaac Sim bug, simulation_app.close() hangs.
     # We must use os._exit(0) to forcefully terminate this child process.
     # The parent process will not be affected.
-    print(f"Child process for stage '{cfg.algo.name}' is now exiting.")
+    print(f"Child process for stage {cfg.algo.name} is now exiting.")
     os._exit(0)
 
 
@@ -245,7 +259,7 @@ def main(cfg: DictConfig):
     print("="*80)
 
     previous_run_path = None
-    
+
     # 2. --- Loop through each defined stage ---
     for i, stage_name in enumerate(cfg.stages):
         print("\n" + "="*80)
@@ -258,35 +272,33 @@ def main(cfg: DictConfig):
         if previous_run_path:
             stage_overrides.append(f"checkpoint_path=run:{previous_run_path}")
             print(f"Will load checkpoint from previous run: {previous_run_path}")
-        
+
         stage_cfg = compose(config_name="train", overrides=stage_overrides)
 
         # 4. --- Run the training stage in a separate process ---
         # A queue is used for the child process to return the run_path.
         return_queue = multiprocessing.Queue(1)
-        
+
         OmegaConf.resolve(stage_cfg)
-        
+
         # run_training_stage(stage_cfg, return_queue)
         process = multiprocessing.Process(
-            target=run_training_stage, 
+            target=run_training_stage,
             kwargs={'cfg': stage_cfg, 'return_queue': return_queue}
         )
-        
+
         print(f"Starting child process for stage '{stage_name}'...")
         process.start()
-        
+
         # Wait for the child process to finish (or exit).
         process.join()
         print(f"Child process for stage '{stage_name}' has finished.")
 
         # Check if the process exited successfully
         if process.exitcode != 0:
-            print(f"ERROR: Child process for stage '{stage_name}' exited with code {process.exitcode}.")
-            # Decide if you want to stop the whole sequence on error
-            # raise RuntimeError(f"Stage '{stage_name}' failed.") 
-            break # Or just break the loop
-
+            message = f"Child process for stage {stage_name} exited with code {process.exitcode}."
+            print(f"ERROR: {message}")
+            raise RuntimeError(message)
         # 5. --- Retrieve the result from the queue and update state ---
         try:
             current_run_path = return_queue.get(timeout=10)
@@ -294,8 +306,9 @@ def main(cfg: DictConfig):
             print(f"✅ COMPLETED STAGE {i+1}/{len(cfg.stages)}: {stage_name}")
             print(f"   Run Path: {current_run_path}")
         except Exception as e:
-            print(f"ERROR: Could not retrieve run_path from child process for stage '{stage_name}'. Error: {e}")
-            break # Stop the sequence if we can't get the path
+            message = f"Could not retrieve run_path from child process for stage {stage_name}. Error: {e}"
+            print(f"ERROR: {message}")
+            raise RuntimeError(message) from e
 
         print("="*80)
 
