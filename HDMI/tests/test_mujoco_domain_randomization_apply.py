@@ -151,6 +151,59 @@ def test_mujoco_simple_env_applies_body_scale_randomization_from_task_cfg():
         aa.set_backend("isaac")
 
 
+def test_mujoco_simple_env_applies_object_randomization_from_task_cfg():
+    root = Path(__file__).resolve().parents[1]
+    aa.set_backend("mujoco")
+    env = None
+    try:
+        with initialize_config_dir(config_dir=str((root / "cfg").resolve()), version_base=None):
+            cfg = compose(
+                config_name="train",
+                overrides=[
+                    "backend=mujoco",
+                    "task=G1/hdmi/open_door-feet",
+                    "task.num_envs=2",
+                    "task.max_episode_length=4",
+                    "task.viewer.env_spacing=0",
+                    "task.randomization.body_scale.scale_range=[1.0,1.0]",
+                    "task.randomization.object_body_randomization.mass_range=[9.0,9.0]",
+                    "task.randomization.object_body_randomization.dynamic_friction_range=[0.6,0.6]",
+                    "task.randomization.object_body_randomization.static_dynamic_friction_ratio_range=[2.0,2.0]",
+                    "task.randomization.object_body_randomization.restitution_range=[0.1,0.1]",
+                    "task.randomization.object_joint_randomization.armature_range=[0.03,0.03]",
+                    "task.randomization.object_joint_randomization.friction_range=[0.7,0.7]",
+                    "task.randomization.object_joint_randomization.damping_range=[2.5,2.5]",
+                    "~task.observation.depth",
+                ],
+            )
+        OmegaConf.resolve(cfg)
+        OmegaConf.set_struct(cfg, False)
+        from active_adaptation.envs import SimpleEnv
+
+        env = SimpleEnv(cfg.task)
+        door = env.scene["door"]
+        materials = door.root_physx_view.get_material_properties()
+        masses = door.root_physx_view.get_masses()
+        dof_addr = int(door.joint_qveladr_read[0])
+        armatures = torch.tensor(
+            [door.mj_models[env_id].dof_armature[dof_addr] for env_id in range(door.num_instances)]
+        )
+
+        env.reset()
+
+        assert torch.allclose(masses, torch.full_like(masses, 9.0))
+        assert torch.allclose(materials[..., 0], torch.full_like(materials[..., 0], 1.2))
+        assert torch.allclose(materials[..., 1], torch.full_like(materials[..., 1], 0.6))
+        assert torch.allclose(materials[..., 2], torch.full_like(materials[..., 2], 0.1))
+        assert torch.allclose(armatures, torch.full_like(armatures, 0.03))
+        assert torch.allclose(door._custom_friction, torch.full_like(door._custom_friction, 0.7))
+        assert torch.allclose(door._custom_damping, torch.full_like(door._custom_damping, 2.5))
+    finally:
+        if env is not None:
+            env.close()
+        aa.set_backend("isaac")
+
+
 def test_mujoco_articulated_object_applies_joint_armature_and_custom_terms_per_env():
     module = _mujoco_env_module()
     from active_adaptation.assets_mjcf import ROBOTS

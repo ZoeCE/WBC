@@ -161,6 +161,19 @@ def test_feet_contact_rewards_match_hdmi_formulas():
     expected_air_time[1] = 0.0
     assert torch.allclose(air_time, expected_air_time)
 
+    net_forces_w = torch.tensor(
+        [
+            [[0.6, 0.0, 10.0], [0.3, 0.2, 0.0]],
+            [[0.0, 0.0, 20.0], [0.0, 0.7, 0.0]],
+        ]
+    )
+
+    stumble = reward_parity.feet_stumble(net_forces_w)
+
+    in_xy_contact = net_forces_w[..., :2].norm(dim=-1) > 0.5
+    expected_stumble = -in_xy_contact.float().mean(dim=1, keepdim=True)
+    assert torch.allclose(stumble, expected_stumble)
+
 
 def test_eef_contact_exp_matches_hdmi_contact_reward_formula():
     contact_eef_pos_w = torch.tensor(

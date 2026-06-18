@@ -502,6 +502,7 @@ reward:
     feet_slip: {{weight: 1.0, body_names: [{body_name}], tolerance: 0.0}}
     impact_force_l2: {{weight: 1.0, body_names: [{body_name}]}}
     feet_air_time: {{weight: 1.0, body_names: [{body_name}], thres: 0.2}}
+    feet_stumble: {{weight: 1.0, body_names: [{body_name}]}}
 """.strip()
     )
     script = _load_cli_module()
@@ -515,8 +516,21 @@ reward:
         "feet.feet_slip",
         "feet.impact_force_l2",
         "feet.feet_air_time",
+        "feet.feet_stumble",
     ]
     assert summary["reward_terms_skipped"] == []
+
+
+def test_all_g1_hdmi_task_rewards_have_mujoco_playback_terms():
+    script = _load_cli_module()
+    missing = {}
+    for task_yaml in sorted((ROOT / "cfg/task/G1/hdmi").glob("*.yaml")):
+        reward_cfg = script.load_task_reward_config(task_yaml)
+        _, _, skipped = script.filter_kinematic_reward_config(reward_cfg)
+        if skipped:
+            missing[task_yaml.name] = skipped
+
+    assert missing == {}
 
 
 def test_mujoco_playback_parity_cli_reports_policy_action_summary(tmp_path, capsys):

@@ -48,6 +48,7 @@ KINEMATIC_REWARD_TERMS = {
     "joint_torque_limits",
     "feet_slip",
     "impact_force_l2",
+    "feet_stumble",
     "feet_air_time",
     "object_pos_tracking",
     "object_ori_tracking",

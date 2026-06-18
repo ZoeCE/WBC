@@ -452,6 +452,19 @@ def feet_slip(
     return -(in_contact.to(dtype=feet_vel.dtype) * feet_vel).sum(dim=1, keepdim=True)
 
 
+def feet_stumble(
+    net_forces_w: torch.Tensor,
+    force_threshold: float = 0.5,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI feet_stumble reward."""
+    _require_last_dim("net_forces_w", net_forces_w, 3)
+    if net_forces_w.ndim != 3:
+        raise ValueError(f"net_forces_w must have shape (num_envs, num_feet, 3), got {tuple(net_forces_w.shape)}.")
+
+    in_contact = net_forces_w[..., :2].norm(dim=-1) > float(force_threshold)
+    return -in_contact.to(dtype=net_forces_w.dtype).mean(dim=1, keepdim=True)
+
+
 def impact_force_l2(
     net_forces_w_history: torch.Tensor,
     first_contact: torch.Tensor,

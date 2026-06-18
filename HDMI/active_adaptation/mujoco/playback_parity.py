@@ -51,6 +51,7 @@ class MujocoRewardState:
     contact_current_contact_time: torch.Tensor | None = None
     contact_last_air_time: torch.Tensor | None = None
     contact_first_contact: torch.Tensor | None = None
+    contact_net_forces_w: torch.Tensor | None = None
     contact_net_forces_w_history: torch.Tensor | None = None
     default_mass_total: torch.Tensor | None = None
     is_standing_env: torch.Tensor | None = None
@@ -503,6 +504,15 @@ def _compute_reward_term(term_name: str, params: dict[str, Any], state: MujocoRe
             ),
             tolerance=float(params.pop("tolerance", 0.0)),
         )
+    if term_name == "feet_stumble":
+        body_names = _required_param(params, "body_names", term_name)
+        contact_indices = _state_contact_body_indices(state, body_names)
+        return reward_parity.feet_stumble(
+            net_forces_w=_select_state_body_tensor(
+                _required_state_tensor(state, "contact_net_forces_w"),
+                contact_indices,
+            ),
+        )
     if term_name == "impact_force_l2":
         body_names = _required_param(params, "body_names", term_name)
         contact_indices = _state_contact_body_indices(state, body_names)
@@ -655,6 +665,7 @@ def _contact_reward_state(scene: Any, robot: Any) -> dict[str, Any]:
         "contact_current_contact_time": data.current_contact_time,
         "contact_last_air_time": data.last_air_time,
         "contact_first_contact": sensor.compute_first_contact(_scene_step_dt(scene)),
+        "contact_net_forces_w": data.net_forces_w,
         "contact_net_forces_w_history": data.net_forces_w_history,
         "default_mass_total": default_mass_total,
     }
