@@ -10,6 +10,7 @@ from .playback_parity import (
     MujocoRewardState,
     PlaybackParityMetrics,
     build_reward_state_from_scene,
+    compute_kinematic_motion_playback_parity,
     compute_playback_parity,
     compute_reward_from_spec,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "object_orientation_tracking",
     "object_position_tracking",
     "build_reward_state_from_scene",
+    "compute_kinematic_motion_playback_parity",
     "compute_playback_parity",
     "compute_reward_from_spec",
 ]
