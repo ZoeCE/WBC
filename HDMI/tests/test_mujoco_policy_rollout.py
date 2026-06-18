@@ -57,6 +57,40 @@ def _write_zero_policy_bundle(tmp_path: Path, joint_name: str) -> MujocoPolicyBu
     return MujocoPolicyBundle.load(policy_path)
 
 
+def _write_object_policy_bundle(tmp_path: Path, joint_name: str, object_body_name: str) -> MujocoPolicyBundle:
+    module = TensorDictModule(
+        torch.nn.Linear(7, 1, bias=False),
+        in_keys=["object"],
+        out_keys=["action"],
+    )
+    module.module.weight.data.zero_()
+    module.module.weight.data[0, 0] = 1.0
+    module.module.weight.data[0, -1] = 1.0
+    policy_path = tmp_path / "policy-object-final.pt"
+    torch.save(module, policy_path)
+    (tmp_path / "policy-object-final.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "observation": {
+                    "object": {
+                        "object_xy_b": {"object_name": object_body_name},
+                        "object_heading_b": {"object_name": object_body_name},
+                        "ref_contact_pos_b": {
+                            "object_name": object_body_name,
+                            "contact_target_pos_offset": [[0.0, 1.0, 0.0]],
+                            "yaw_only": True,
+                        },
+                    },
+                },
+                "action_scale": 0.5,
+                "policy_joint_names": [joint_name],
+                "default_joint_pos": {joint_name: 0.0},
+            }
+        )
+    )
+    return MujocoPolicyBundle.load(policy_path)
+
+
 def test_policy_rollout_steps_mujoco_scene_and_reports_parity(tmp_path):
     module = importlib.import_module("active_adaptation.envs.mujoco")
     from active_adaptation.assets_mjcf import ROBOTS
@@ -95,3 +129,40 @@ def test_policy_rollout_steps_mujoco_scene_and_reports_parity(tmp_path):
     assert torch.isfinite(metrics.q_l2).all()
     assert torch.isfinite(metrics.body_pos_l2).all()
     assert torch.allclose(metrics.actions, torch.zeros_like(metrics.actions))
+
+
+def test_policy_rollout_fills_object_observations_from_mujoco_scene(tmp_path):
+    module = importlib.import_module("active_adaptation.envs.mujoco")
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS.with_object("g1_29dof", object_asset_name="door")
+
+    scene = module.MJScene(SceneCfg(), num_envs=1, launch_viewer=False)
+    robot = scene["robot"]
+    door = scene["door"]
+    object_body_name = door.body_names[0]
+    body_names = [robot.body_names[0], object_body_name]
+    joint_name = robot.joint_names[0]
+    motion_dir = tmp_path / "motion-object"
+    _write_motion_dir(motion_dir, body_names, [joint_name])
+    reference = MujocoMotionReference.from_motion_dir(
+        motion_dir=motion_dir,
+        body_names=body_names,
+        joint_names=[joint_name],
+        root_body_name=robot.body_names[0],
+        future_steps=[0],
+    )
+    policy_bundle = _write_object_policy_bundle(tmp_path, joint_name, object_body_name)
+
+    metrics = run_mujoco_policy_rollout(
+        scene=scene,
+        policy_bundle=policy_bundle,
+        reference=reference,
+        steps=[0, 1],
+        decimation=1,
+    )
+
+    assert metrics.actions.shape == (2, 1, 1)
+    assert metrics.joint_position_targets.shape == (2, 1, 1)
+    assert torch.isfinite(metrics.actions).all()

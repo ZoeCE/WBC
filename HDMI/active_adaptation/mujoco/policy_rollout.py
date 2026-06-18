@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import torch
 
@@ -46,6 +46,7 @@ def run_mujoco_policy_rollout(
     policy_bundle.reset(
         _policy_state_from_scene(
             scene=scene,
+            policy_bundle=policy_bundle,
             reference=reference,
             step=int(steps_t[0].item()),
             policy_joint_ids=policy_joint_ids,
@@ -63,6 +64,7 @@ def run_mujoco_policy_rollout(
         step = int(step_t.item())
         state = _policy_state_from_scene(
             scene=scene,
+            policy_bundle=policy_bundle,
             reference=reference,
             step=step,
             policy_joint_ids=policy_joint_ids,
@@ -115,6 +117,7 @@ def _policy_joint_ids(robot: Any, policy_joint_names: Sequence[str]) -> list[int
 def _policy_state_from_scene(
     *,
     scene: Any,
+    policy_bundle: MujocoPolicyBundle,
     reference: MujocoMotionReference,
     step: int,
     policy_joint_ids: Sequence[int],
@@ -124,6 +127,7 @@ def _policy_state_from_scene(
     robot = scene["robot"]
     step_ids = torch.full((scene.num_envs,), step, dtype=torch.long)
     fields = reference.observation_fields_at(step_ids)
+    object_state = _policy_object_state_from_scene(scene=scene, policy_bundle=policy_bundle)
     return MujocoPolicyState(
         root_ang_vel_b=robot.data.root_ang_vel_b,
         projected_gravity_b=robot.data.projected_gravity_b,
@@ -139,7 +143,94 @@ def _policy_state_from_scene(
         motion_len=fields.motion_len,
         robot_root_pos_w=robot.data.root_link_pos_w,
         robot_root_quat_w=robot.data.root_link_quat_w,
+        **object_state,
     )
+
+
+def _policy_object_state_from_scene(scene: Any, policy_bundle: MujocoPolicyBundle) -> dict[str, torch.Tensor]:
+    object_name = _first_policy_observation_object_name(policy_bundle, ("object_xy_b", "object_heading_b"))
+    contact_cfg = _first_policy_observation_cfg(policy_bundle, "ref_contact_pos_b")
+    if contact_cfg is not None and object_name is None and contact_cfg.get("object_name") is not None:
+        object_name = str(contact_cfg["object_name"])
+
+    if object_name is None:
+        if _uses_policy_observation(policy_bundle, ("object_xy_b", "object_heading_b", "ref_contact_pos_b")):
+            object_name = _default_scene_object_body_name(scene)
+        else:
+            return {}
+
+    object_pos_w, object_quat_w = _scene_body_pose_w(scene, object_name)
+    object_state = {
+        "object_pos_w": object_pos_w,
+        "object_quat_w": object_quat_w,
+    }
+    if contact_cfg is not None:
+        object_state["contact_target_pos_w"] = _contact_target_pos_w(
+            object_pos_w=object_pos_w,
+            object_quat_w=object_quat_w,
+            contact_cfg=contact_cfg,
+        )
+    return object_state
+
+
+def _first_policy_observation_object_name(
+    policy_bundle: MujocoPolicyBundle,
+    obs_keys: Sequence[str],
+) -> str | None:
+    for obs_key in obs_keys:
+        obs_cfg = _first_policy_observation_cfg(policy_bundle, obs_key)
+        if obs_cfg is not None and obs_cfg.get("object_name") is not None:
+            return str(obs_cfg["object_name"])
+    return None
+
+
+def _first_policy_observation_cfg(
+    policy_bundle: MujocoPolicyBundle,
+    obs_key: str,
+) -> Mapping[str, Any] | None:
+    for group_cfg in policy_bundle.observation_builder.observation_cfg.values():
+        if obs_key not in group_cfg:
+            continue
+        obs_cfg = group_cfg[obs_key] or {}
+        if not isinstance(obs_cfg, Mapping):
+            raise ValueError(f"Policy observation {obs_key!r} config must be a mapping.")
+        return obs_cfg
+    return None
+
+
+def _uses_policy_observation(policy_bundle: MujocoPolicyBundle, obs_keys: Sequence[str]) -> bool:
+    return any(_first_policy_observation_cfg(policy_bundle, obs_key) is not None for obs_key in obs_keys)
+
+
+def _default_scene_object_body_name(scene: Any) -> str:
+    robot = scene["robot"]
+    object_body_names: list[str] = []
+    for object_view in (*scene.articulations.values(), *scene.rigid_objects.values()):
+        if object_view is robot:
+            continue
+        object_body_names.extend(getattr(object_view, "body_names", ()) or ())
+    if not object_body_names:
+        raise ValueError("Policy uses object observations, but MuJoCo scene has no non-robot object body.")
+    return object_body_names[0]
+
+
+def _contact_target_pos_w(
+    *,
+    object_pos_w: torch.Tensor,
+    object_quat_w: torch.Tensor,
+    contact_cfg: Mapping[str, Any],
+) -> torch.Tensor:
+    offsets = torch.as_tensor(
+        contact_cfg.get("contact_target_pos_offset", [[0.0, 0.0, 0.0]]),
+        dtype=object_pos_w.dtype,
+        device=object_pos_w.device,
+    )
+    if offsets.ndim == 1:
+        offsets = offsets.unsqueeze(0)
+    if offsets.shape[-1] != 3:
+        raise ValueError(f"contact_target_pos_offset must end in xyz dim 3, got {tuple(offsets.shape)}.")
+    offsets = offsets.unsqueeze(0).expand(object_pos_w.shape[0], -1, -1)
+    return object_pos_w[:, None, :] + _quat_rotate(object_quat_w[:, None, :], offsets)
 
 
 def _apply_policy_action(robot: Any, action: MujocoPolicyAction, policy_joint_ids: Sequence[int]) -> None:
@@ -197,6 +288,18 @@ def _scene_body_pos_w(scene: Any, body_names: Sequence[str]) -> torch.Tensor:
     return torch.stack(body_pos_w, dim=1)
 
 
+def _scene_body_pose_w(scene: Any, body_name: str) -> tuple[torch.Tensor, torch.Tensor]:
+    robot = scene["robot"]
+    if body_name in robot.body_names:
+        body_index = robot.body_names.index(body_name)
+        return robot.data.body_link_pos_w[:, body_index], robot.data.body_link_quat_w[:, body_index]
+    object_view, object_body_index = _find_object_body(scene, body_name)
+    return (
+        object_view.data.body_link_pos_w[:, object_body_index],
+        object_view.data.body_link_quat_w[:, object_body_index],
+    )
+
+
 def _find_object_body(scene: Any, body_name: str) -> tuple[Any, int]:
     for object_view in (*scene.articulations.values(), *scene.rigid_objects.values()):
         if object_view is scene["robot"]:
@@ -241,3 +344,10 @@ def _policy_action_history_steps(policy_bundle: MujocoPolicyBundle) -> int:
             if obs_key == "prev_actions":
                 max_steps = max(max_steps, int((params or {}).get("steps", 1)))
     return max_steps
+
+
+def _quat_rotate(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    quat = quat.expand(*vec.shape[:-1], 4)
+    xyz = quat[..., 1:]
+    t = torch.linalg.cross(xyz, vec, dim=-1) * 2
+    return vec + quat[..., 0:1] * t + torch.linalg.cross(xyz, t, dim=-1)
