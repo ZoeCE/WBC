@@ -387,7 +387,7 @@ def test_mujoco_playback_parity_cli_reports_policy_motion_mjcf_name_mapping(tmp_
     motion_dir = tmp_path / "data/motion/test_door"
     object_body_name, object_joint_name = _write_motion_dir(motion_dir)
     meta = json.loads((motion_dir / "meta.json").read_text())
-    policy_path = _write_rollout_policy_bundle(tmp_path, meta["joint_names"][0])
+    policy_path = _write_command_future_policy_bundle(tmp_path, meta["body_names"][0], meta["joint_names"][0])
     policy_cfg_path = policy_path.with_suffix(".yaml")
     policy_cfg = yaml.safe_load(policy_cfg_path.read_text())
     policy_cfg["isaac_body_names"] = [meta["body_names"][0]]

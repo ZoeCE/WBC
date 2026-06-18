@@ -13,6 +13,7 @@ from active_adaptation.assets_mjcf.manifest import build_name_index, load_mujoco
 
 
 HDMI_ROOT = Path(__file__).resolve().parents[2]
+_REFERENCE_BODY_OBS_KEYS = frozenset({"ref_body_pos_future_local"})
 
 
 @dataclass(frozen=True)
@@ -113,13 +114,18 @@ def validate_policy_task_motion_mapping(
     policy_config_path = Path(policy_config_path)
     policy_cfg = _load_yaml_mapping(policy_config_path)
     task_report = validate_task_motion_mapping(task_yaml, robot_name=robot_name)
-    policy_body_names = tuple(
+    isaac_body_names = tuple(
         _string_list(policy_cfg.get("isaac_body_names", ()), "isaac_body_names", policy_config_path)
+    )
+    policy_body_names = _policy_reference_body_names(
+        policy_cfg,
+        fallback_body_names=isaac_body_names,
+        path=policy_config_path,
     )
     policy_joint_names = tuple(
         _string_list(
-            policy_cfg.get("isaac_joint_names") or policy_cfg.get("policy_joint_names", ()),
-            "isaac_joint_names",
+            policy_cfg.get("policy_joint_names") or policy_cfg.get("isaac_joint_names", ()),
+            "policy_joint_names",
             policy_config_path,
         )
     )
@@ -256,6 +262,34 @@ def validate_all_task_motion_mappings(
         reports.append(validate_task_motion_mapping(task_path, robot_name=robot_name))
     return tuple(reports)
 
+
+def _policy_reference_body_names(
+    policy_cfg: Mapping[str, Any],
+    *,
+    fallback_body_names: Sequence[str],
+    path: Path,
+) -> tuple[str, ...]:
+    if "observation" not in policy_cfg:
+        return tuple(fallback_body_names)
+
+    observation_cfg = _mapping(policy_cfg.get("observation", {}), f"{path}: observation")
+    body_names: list[str] = []
+    uses_reference_body_observation = False
+    for group_name, group_cfg_value in observation_cfg.items():
+        group_cfg = _mapping(group_cfg_value or {}, f"{path}: observation.{group_name}")
+        for obs_key, params_value in group_cfg.items():
+            if str(obs_key) not in _REFERENCE_BODY_OBS_KEYS:
+                continue
+            uses_reference_body_observation = True
+            params = _mapping(params_value or {}, f"{path}: observation.{group_name}.{obs_key}")
+            if "body_names" in params:
+                body_names.extend(_string_list(params.get("body_names"), "body_names", path))
+
+    if body_names:
+        return _unique_preserve_order(tuple(body_names))
+    if uses_reference_body_observation:
+        return tuple(fallback_body_names)
+    return ()
 
 def _build_policy_name_mapping(
     policy_names: Sequence[str],

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from active_adaptation.mujoco.task_mapping import (
     validate_all_task_motion_mappings,
+    validate_policy_task_motion_mapping,
     validate_task_motion_mapping,
 )
 
@@ -131,3 +132,41 @@ def test_task_mapping_cli_reports_exported_policy_motion_mjcf_name_indices(tmp_p
         "motion_index": 0,
         "mujoco_index": left_hip_mujoco_index,
     }
+
+
+def test_exported_policy_mapping_uses_policy_reference_names_not_full_asset_names(tmp_path):
+    task_path = ROOT / "cfg/task/G1/hdmi/push_box.yaml"
+    policy_cfg_path = tmp_path / "policy-export.yaml"
+    policy_cfg_path.write_text(
+        json.dumps(
+            {
+                "observation": {
+                    "policy": {
+                        "joint_pos_history": {
+                            "joint_names": [
+                                "left_hip_pitch_joint",
+                                "left_wrist_pitch_joint",
+                            ]
+                        },
+                        "prev_actions": {"steps": 3},
+                    }
+                },
+                "policy_joint_names": ["left_hip_pitch_joint"],
+                "isaac_joint_names": [
+                    "left_hip_pitch_joint",
+                    "left_wrist_pitch_joint",
+                ],
+                "isaac_body_names": [
+                    "pelvis",
+                    "waist_yaw_link",
+                    "waist_roll_link",
+                ],
+            }
+        )
+    )
+
+    report = validate_policy_task_motion_mapping(policy_cfg_path, task_path)
+
+    assert report.policy_body_names == ()
+    assert [entry.name for entry in report.policy_body_name_mapping] == []
+    assert [entry.name for entry in report.policy_joint_name_mapping] == ["left_hip_pitch_joint"]
