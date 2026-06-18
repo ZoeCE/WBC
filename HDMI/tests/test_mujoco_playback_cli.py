@@ -630,6 +630,8 @@ def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path,
     assert summary["policy_rollout_joint_target_shape"] == [2, 1, 1]
     assert summary["policy_rollout_q_l2_max"] >= 0.0
     assert summary["policy_rollout_body_pos_l2_max"] >= 0.0
+    assert summary["policy_rollout_action_rate_l2_shape"] == [2, 1, 1]
+    assert summary["policy_rollout_action_rate_l2_max"] >= 0.0
 
 
 def test_mujoco_playback_parity_cli_fills_object_policy_observations_from_reference(tmp_path, capsys):
