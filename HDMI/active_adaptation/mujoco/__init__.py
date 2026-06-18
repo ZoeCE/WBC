@@ -6,7 +6,13 @@ from .domain_randomization import (
 )
 from .motion_reference import MujocoMotionReference, MujocoReferenceObservationFields
 from .observation_builder import MujocoObservationBuilder, MujocoPolicyState
-from .playback_parity import MujocoRewardState, PlaybackParityMetrics, compute_playback_parity, compute_reward_from_spec
+from .playback_parity import (
+    MujocoRewardState,
+    PlaybackParityMetrics,
+    build_reward_state_from_scene,
+    compute_playback_parity,
+    compute_reward_from_spec,
+)
 from .reward_parity import (
     eef_contact_all,
     eef_contact_exp,
@@ -37,6 +43,7 @@ __all__ = [
     "object_joint_position_tracking",
     "object_orientation_tracking",
     "object_position_tracking",
+    "build_reward_state_from_scene",
     "compute_playback_parity",
     "compute_reward_from_spec",
 ]

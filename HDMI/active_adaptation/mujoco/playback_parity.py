@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import torch
 
@@ -53,6 +53,103 @@ def compute_playback_parity(
     if reward is not None and reward.ndim == 0:
         reward = reward.unsqueeze(0)
     return PlaybackParityMetrics(q_l2=q_l2, body_pos_l2=body_pos_l2, reward=reward)
+
+
+def build_reward_state_from_scene(
+    scene: Any,
+    *,
+    body_names: str | Sequence[str] | None = None,
+    joint_names: str | Sequence[str] | None = None,
+    ref_body_pos_w: torch.Tensor | None = None,
+    ref_joint_pos: torch.Tensor | None = None,
+    ref_root_pos_w: torch.Tensor | None = None,
+    ref_root_quat_w: torch.Tensor | None = None,
+    object_name: str | None = None,
+    object_body_name: str | None = None,
+    object_joint_name: str | None = None,
+    ref_object_pos_w: torch.Tensor | None = None,
+    ref_object_quat_w: torch.Tensor | None = None,
+    ref_object_joint_pos: torch.Tensor | None = None,
+    contact_eef_pos_w: torch.Tensor | None = None,
+    contact_target_pos_w: torch.Tensor | None = None,
+    eef_contact_forces_b: torch.Tensor | None = None,
+    ref_object_contact: torch.Tensor | None = None,
+) -> MujocoRewardState:
+    """Build reward tensors from the current MuJoCo scene state and a reference frame."""
+    robot = scene["robot"]
+    if robot is None:
+        raise KeyError("MuJoCo scene does not contain a 'robot' articulation.")
+
+    ref_body_pos_w = _current_reference_frame(ref_body_pos_w, state_rank=3)
+    ref_joint_pos = _current_reference_frame(ref_joint_pos, state_rank=2)
+    ref_root_pos_w = _current_reference_frame(ref_root_pos_w, state_rank=2)
+    ref_root_quat_w = _current_reference_frame(ref_root_quat_w, state_rank=2)
+    ref_object_pos_w = _current_reference_frame(ref_object_pos_w, state_rank=2)
+    ref_object_quat_w = _current_reference_frame(ref_object_quat_w, state_rank=2)
+    ref_object_joint_pos = _current_reference_frame(ref_object_joint_pos, state_rank=1)
+    contact_eef_pos_w = _current_reference_frame(contact_eef_pos_w, state_rank=3)
+    contact_target_pos_w = _current_reference_frame(contact_target_pos_w, state_rank=3)
+    eef_contact_forces_b = _current_reference_frame(eef_contact_forces_b, state_rank=3)
+    ref_object_contact = _current_reference_frame(ref_object_contact, state_rank=2)
+
+    actual_body_pos_w = None
+    if body_names is not None or ref_body_pos_w is not None:
+        body_indices = None if body_names is None else _resolve_indices(robot, "find_bodies", body_names)
+        if body_indices is None:
+            actual_body_pos_w = robot.data.body_link_pos_w
+        else:
+            actual_body_pos_w = robot.data.body_link_pos_w[:, body_indices]
+
+    joint_pos = None
+    if joint_names is not None or ref_joint_pos is not None:
+        joint_indices = None if joint_names is None else _resolve_indices(robot, "find_joints", joint_names)
+        if joint_indices is None:
+            joint_pos = robot.data.joint_pos
+        else:
+            joint_pos = robot.data.joint_pos[:, joint_indices]
+
+    object_pos_w = None
+    object_quat_w = None
+    object_joint_pos = None
+    if object_name is not None:
+        object_view = scene[object_name]
+        if object_view is None:
+            raise KeyError(f"MuJoCo scene does not contain object {object_name!r}.")
+
+        body_index = 0 if object_body_name is None else _resolve_single_index(
+            object_view, "find_bodies", object_body_name, "object body"
+        )
+        object_pos_w = object_view.data.body_link_pos_w[:, body_index]
+        object_quat_w = object_view.data.body_link_quat_w[:, body_index]
+
+        if object_view.num_joints:
+            joint_index = 0 if object_joint_name is None else _resolve_single_index(
+                object_view, "find_joints", object_joint_name, "object joint"
+            )
+            object_joint_pos = object_view.data.joint_pos[:, joint_index]
+    elif ref_object_pos_w is not None or ref_object_quat_w is not None or ref_object_joint_pos is not None:
+        raise ValueError("object_name is required when object reference tensors are provided.")
+
+    return MujocoRewardState(
+        actual_body_pos_w=actual_body_pos_w,
+        ref_body_pos_w=ref_body_pos_w,
+        root_pos_w=robot.data.root_link_pos_w,
+        root_quat_w=robot.data.root_link_quat_w,
+        ref_root_pos_w=ref_root_pos_w,
+        ref_root_quat_w=ref_root_quat_w,
+        joint_pos=joint_pos,
+        ref_joint_pos=ref_joint_pos,
+        object_pos_w=object_pos_w,
+        ref_object_pos_w=ref_object_pos_w,
+        object_quat_w=object_quat_w,
+        ref_object_quat_w=ref_object_quat_w,
+        object_joint_pos=object_joint_pos,
+        ref_object_joint_pos=ref_object_joint_pos,
+        contact_eef_pos_w=contact_eef_pos_w,
+        contact_target_pos_w=contact_target_pos_w,
+        eef_contact_forces_b=eef_contact_forces_b,
+        ref_object_contact=ref_object_contact,
+    )
 
 
 def compute_reward_from_spec(reward_cfg: Mapping[str, Any], state: MujocoRewardState) -> torch.Tensor:
@@ -185,6 +282,28 @@ def _required_state_tensor(state: MujocoRewardState, name: str) -> torch.Tensor:
     if value is None:
         raise ValueError(f"MujocoRewardState.{name} is required for this reward term.")
     return value
+
+
+def _current_reference_frame(value: torch.Tensor | None, *, state_rank: int) -> torch.Tensor | None:
+    if value is None:
+        return None
+    if value.ndim == state_rank + 1:
+        return value[:, 0]
+    return value
+
+
+def _resolve_indices(asset: Any, resolver_name: str, name_keys: str | Sequence[str]) -> list[int]:
+    indices, _ = getattr(asset, resolver_name)(name_keys, preserve_order=True)
+    if not indices:
+        raise ValueError(f"No names matched {name_keys!r}.")
+    return indices
+
+
+def _resolve_single_index(asset: Any, resolver_name: str, name_key: str, label: str) -> int:
+    indices = _resolve_indices(asset, resolver_name, [name_key])
+    if len(indices) != 1:
+        raise ValueError(f"Expected one {label} match for {name_key!r}, got {len(indices)}.")
+    return indices[0]
 
 
 def _require_same_shape(lhs_name: str, lhs: torch.Tensor, rhs_name: str, rhs: torch.Tensor) -> None:
