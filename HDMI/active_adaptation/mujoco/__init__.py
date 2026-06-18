@@ -1,3 +1,9 @@
+from .domain_randomization import (
+    MujocoObjectBodyRandomizationSample,
+    MujocoObjectJointRandomizationSample,
+    sample_object_body_randomization,
+    sample_object_joint_randomization,
+)
 from .motion_reference import MujocoMotionReference, MujocoReferenceObservationFields
 from .observation_builder import MujocoObservationBuilder, MujocoPolicyState
 from .playback_parity import PlaybackParityMetrics, compute_playback_parity
@@ -8,6 +14,10 @@ from .reward_parity import (
 )
 
 __all__ = [
+    "MujocoObjectBodyRandomizationSample",
+    "MujocoObjectJointRandomizationSample",
+    "sample_object_body_randomization",
+    "sample_object_joint_randomization",
     "MujocoMotionReference",
     "MujocoObservationBuilder",
     "MujocoPolicyState",
