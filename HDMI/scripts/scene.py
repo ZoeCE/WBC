@@ -1,9 +1,8 @@
 from typing import Sequence
 import torch
 
-from isaaclab.app import AppLauncher
-
 def main():
+    from isaaclab.app import AppLauncher
 
     app_launcher = AppLauncher(headless=False)
     simulation_app = app_launcher.app

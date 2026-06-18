@@ -1,3 +1,4 @@
+import ast
 import importlib.util
 import os
 import subprocess
@@ -130,6 +131,21 @@ def test_eval_config_declares_backend_override_key():
 def test_render_config_declares_backend_override_key():
     cfg = yaml.safe_load((ROOT / "cfg/render.yaml").read_text())
     assert cfg["backend"] == "isaac"
+
+
+def test_scripts_do_not_import_isaac_app_at_module_import_time():
+    offenders = []
+    for script_path in sorted((ROOT / "scripts").glob("*.py")):
+        tree = ast.parse(script_path.read_text(), filename=str(script_path))
+        offenders.extend(
+            f"{script_path.name}:{node.lineno}"
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module == "isaaclab.app"
+            for alias in node.names
+            if alias.name == "AppLauncher"
+        )
+
+    assert offenders == []
 
 
 def test_mujoco_backend_sets_backend_without_launching_isaac_app():
