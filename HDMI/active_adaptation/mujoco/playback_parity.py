@@ -1009,6 +1009,13 @@ def _build_kinematic_reward_state(
         object_view=object_view,
     )
     joint_effort_limits = _gather_scene_joint_effort_limits(robot, reference.requested_joint_names, object_view)
+    action_buf = torch.zeros(
+        robot.num_instances,
+        robot.data.joint_pos.shape[1],
+        2,
+        dtype=actual_joint_pos.dtype,
+        device=actual_joint_pos.device,
+    )
     if object_view is not None:
         object_body_index = 0
         if object_body_name is not None and object_body_name in object_view.body_names:
@@ -1089,6 +1096,7 @@ def _build_kinematic_reward_state(
         contact_target_pos_w=contact_target_pos_w,
         eef_contact_forces_b=eef_contact_forces_b,
         ref_object_contact=ref_object_contact,
+        action_buf=action_buf,
         **_contact_reward_state(scene, robot),
     )
 

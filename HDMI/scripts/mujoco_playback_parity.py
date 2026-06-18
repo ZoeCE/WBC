@@ -44,6 +44,8 @@ KINEMATIC_REWARD_TERMS = {
     "survival",
     "joint_vel_l2",
     "joint_pos_limits",
+    "action_rate_l2",
+    "joint_torque_limits",
     "feet_slip",
     "impact_force_l2",
     "feet_air_time",

@@ -466,6 +466,8 @@ reward:
     survival: {{weight: 1.0}}
     joint_vel_l2: {{weight: 5.0e-4, joint_names: [{joint_name}]}}
     joint_pos_limits: {{weight: 10.0, joint_names: [{joint_name}], soft_factor: 0.9}}
+    action_rate_l2: {{weight: 0.01}}
+    joint_torque_limits: {{weight: 0.01, joint_names: [{joint_name}], soft_factor: 0.9}}
 """.strip()
     )
     script = _load_cli_module()
@@ -479,6 +481,8 @@ reward:
         "loco.survival",
         "loco.joint_vel_l2",
         "loco.joint_pos_limits",
+        "loco.action_rate_l2",
+        "loco.joint_torque_limits",
     ]
     assert summary["reward_terms_skipped"] == []
 
