@@ -75,11 +75,21 @@ def run_parity(
         object_body_name=object_body_name,
         object_joint_name=object_joint_name,
     )
-    return summarize_metrics(
+    summary = summarize_metrics(
         metrics,
         reward_terms_used=reward_terms_used,
         reward_terms_skipped=reward_terms_skipped,
     )
+    summary.update(
+        {
+            "motion_dir": str(motion_dir),
+            "object_name": object_name,
+            "object_body_name": object_body_name,
+            "object_joint_name": object_joint_name,
+            "root_body_name": root_body_name,
+        }
+    )
+    return summary
 
 
 def summarize_metrics(
@@ -110,15 +120,17 @@ def summarize_metrics(
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     with contextlib.redirect_stdout(sys.stderr):
-        reward_config = _load_reward_config_from_args(args)
+        task_cfg = _load_task_config_from_args(args)
+        playback_inputs = _resolve_playback_inputs(args, task_cfg)
+        reward_config = _load_reward_config_from_args(args, task_cfg)
         summary = run_parity(
-            motion_dir=args.motion_dir,
+            motion_dir=playback_inputs["motion_dir"],
             robot_name=args.robot_name,
-            object_name=args.object_name,
+            object_name=playback_inputs["object_name"],
             object_type=args.object_type,
-            object_body_name=args.object_body_name,
-            object_joint_name=args.object_joint_name,
-            root_body_name=args.root_body_name,
+            object_body_name=playback_inputs["object_body_name"],
+            object_joint_name=playback_inputs["object_joint_name"],
+            root_body_name=playback_inputs["root_body_name"],
             steps=_parse_steps(args.steps),
             num_envs=args.num_envs,
             reward_config=reward_config,
@@ -131,7 +143,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run MuJoCo kinematic playback parity on a motion.npz + meta.json directory."
     )
-    parser.add_argument("--motion-dir", required=True, help="Directory containing motion.npz and meta.json.")
+    parser.add_argument(
+        "--motion-dir",
+        default=None,
+        help="Directory containing motion.npz and meta.json. Defaults to task YAML command.data_path.",
+    )
     parser.add_argument("--robot-name", default="g1_29dof")
     parser.add_argument("--object-name", default=None)
     parser.add_argument("--object-type", default=None)
@@ -168,21 +184,94 @@ def _load_json(path: str | Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text())
 
 
-def _load_reward_config_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
-    if args.reward_config_json and args.task_yaml:
-        raise ValueError("--reward-config-json and --task-yaml are mutually exclusive.")
+def _load_task_config_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
+    if args.task_yaml is None:
+        return None
+    return load_task_config(args.task_yaml)
+
+
+def _resolve_playback_inputs(
+    args: argparse.Namespace,
+    task_cfg: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    command_cfg = _task_command_config(task_cfg, args.task_yaml) if task_cfg is not None else {}
+    motion_dir = args.motion_dir
+    if motion_dir is None:
+        data_path = command_cfg.get("data_path")
+        if data_path is None:
+            raise ValueError("--motion-dir is required unless --task-yaml command.data_path is set.")
+        motion_dir = _resolve_task_data_path(Path(args.task_yaml), data_path)
+
+    return {
+        "motion_dir": motion_dir,
+        "object_name": args.object_name or command_cfg.get("object_asset_name"),
+        "object_body_name": args.object_body_name or command_cfg.get("object_body_name"),
+        "object_joint_name": args.object_joint_name or command_cfg.get("object_joint_name"),
+        "root_body_name": args.root_body_name or command_cfg.get("root_body_name"),
+    }
+
+
+def _task_command_config(
+    task_cfg: Mapping[str, Any],
+    task_yaml: str | Path | None,
+) -> Mapping[str, Any]:
+    command_cfg = task_cfg.get("command", {})
+    if not isinstance(command_cfg, Mapping):
+        raise ValueError(f"Task YAML command section must be a mapping: {task_yaml}")
+    return command_cfg
+
+
+def _resolve_task_data_path(task_yaml: Path, data_path: str | Path) -> Path:
+    data_path = Path(data_path)
+    if data_path.is_absolute():
+        return data_path
+
+    roots = (_task_project_root(task_yaml), HDMI_ROOT, Path.cwd())
+    for root in roots:
+        candidate = root / data_path
+        if candidate.exists():
+            return candidate
+    return roots[0] / data_path
+
+
+def _task_project_root(task_yaml: Path) -> Path:
+    resolved = task_yaml.resolve()
+    parts = resolved.parts
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index] == "cfg":
+            return Path(*parts[:index])
+    return HDMI_ROOT
+
+
+def _load_reward_config_from_args(
+    args: argparse.Namespace,
+    task_cfg: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
     if args.reward_config_json:
         return _load_json(args.reward_config_json)
+    if task_cfg is not None:
+        return _task_reward_config(task_cfg, args.task_yaml)
     if args.task_yaml:
         return load_task_reward_config(args.task_yaml)
     return None
 
 
+def load_task_config(task_yaml: str | Path) -> dict[str, Any]:
+    return _load_task_yaml_with_defaults(Path(task_yaml))
+
+
 def load_task_reward_config(task_yaml: str | Path) -> dict[str, Any]:
-    cfg = _load_task_yaml_with_defaults(Path(task_yaml))
+    cfg = load_task_config(task_yaml)
+    return _task_reward_config(cfg, task_yaml)
+
+
+def _task_reward_config(task_cfg: Mapping[str, Any], task_yaml: str | Path | None) -> dict[str, Any]:
+    cfg = dict(task_cfg)
     reward_cfg = cfg.get("reward", {})
     if not isinstance(reward_cfg, dict):
-        raise ValueError(f"Task YAML reward section must be a mapping, got {type(reward_cfg).__name__}.")
+        raise ValueError(
+            f"Task YAML reward section must be a mapping in {task_yaml}, got {type(reward_cfg).__name__}."
+        )
     return reward_cfg
 
 

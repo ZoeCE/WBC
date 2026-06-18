@@ -18,6 +18,7 @@ def _load_cli_module():
 
 
 def _write_motion_dir(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     module = importlib.import_module("active_adaptation.envs.mujoco")
     from active_adaptation.assets_mjcf import ROBOTS
 
@@ -155,3 +156,38 @@ reward:
         "object_tracking.object_joint_pos_tracking",
     ]
     assert summary["reward_terms_skipped"] == ["tracking.joint_vel_tracking_product"]
+
+
+def test_mujoco_playback_parity_cli_infers_inputs_from_task_yaml(tmp_path, capsys):
+    motion_dir = tmp_path / "data/motion/test_door"
+    object_body_name, object_joint_name = _write_motion_dir(motion_dir)
+    task_yaml = tmp_path / "cfg/task/G1/hdmi/door.yaml"
+    task_yaml.parent.mkdir(parents=True)
+    task_yaml.write_text(
+        f"""
+command:
+  data_path: data/motion/test_door
+  root_body_name: pelvis
+  object_asset_name: door
+  object_body_name: {object_body_name}
+  object_joint_name: {object_joint_name}
+reward:
+  object_tracking:
+    object_joint_pos_tracking: {{weight: 1.0, sigma: 0.25}}
+""".strip()
+    )
+    script = _load_cli_module()
+
+    exit_code = script.main(["--task-yaml", str(task_yaml), "--steps", "0,1"])
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["motion_dir"] == str(motion_dir)
+    assert summary["object_name"] == "door"
+    assert summary["object_body_name"] == object_body_name
+    assert summary["object_joint_name"] == object_joint_name
+    assert summary["root_body_name"] == "pelvis"
+    assert summary["steps"] == 2
+    assert summary["envs"] == 1
+    assert summary["reward_shape"] == [2, 1, 1]
+    assert summary["q_l2_max"] < 1e-5
