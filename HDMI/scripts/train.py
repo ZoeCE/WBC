@@ -7,6 +7,7 @@ import wandb
 import logging
 import os
 import time
+import sys
 import datetime
 
 from omegaconf import OmegaConf, DictConfig
@@ -21,6 +22,11 @@ from tensordict.nn import TensorDictModuleBase
 from tensordict import TensorDict
 
 # local import
+FILE_PATH = os.path.dirname(os.path.abspath(__file__))
+PACKAGE_ROOT = os.path.dirname(FILE_PATH)
+if PACKAGE_ROOT not in sys.path:
+    sys.path.insert(0, PACKAGE_ROOT)
+
 from scripts.helpers import make_env_policy, EpisodeStats, evaluate
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -28,7 +34,6 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
-FILE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(FILE_PATH, "..", "cfg")
 
 
@@ -68,6 +73,7 @@ def main(cfg: DictConfig):
     run_idx = run.name.split("-")[-1]
     run.name = f"{run_idx}-{default_run_name}"
     setproctitle(run.name)
+    os.makedirs(run.dir, exist_ok=True)
 
     cfg_save_path = os.path.join(run.dir, "cfg.yaml")
     OmegaConf.save(cfg, cfg_save_path)
@@ -206,15 +212,19 @@ def main(cfg: DictConfig):
     info, trajs, stats, policy_trajs = evaluate(env, policy_eval, render=cfg.eval_render, seed=cfg.seed)
     run.log(info)
 
-    wandb.finish()
-    os._exit(0)
-    env.close()
-    simulation_app.close()
-
     run_id = run.id
     project = run.project
     entity = run.entity
     run_path = f"{entity}/{project}/{run_id}"
+
+    wandb.finish()
+    if simulation_app is None:
+        env.close()
+        return run_path
+
+    os._exit(0)
+    env.close()
+    simulation_app.close()
     
     return run_path
 

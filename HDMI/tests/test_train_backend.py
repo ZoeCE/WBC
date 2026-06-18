@@ -1,4 +1,6 @@
 import importlib.util
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -97,3 +99,42 @@ def test_mujoco_train_smoke_builds_env_policy_and_steps_once():
         if env is not None:
             env.close()
         aa.set_backend("isaac")
+
+
+def test_mujoco_train_script_runs_minimal_ppo_loop(tmp_path):
+    run_dir = tmp_path / "mujoco-train-smoke"
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/train.py"),
+        "backend=mujoco",
+        "task=G1/tracking/walk",
+        "task.num_envs=1",
+        "task.max_episode_length=4",
+        "task.viewer.env_spacing=0",
+        "algo.train_every=2",
+        "algo.ppo_epochs=1",
+        "algo.num_minibatches=1",
+        "algo.compile=false",
+        "total_frames=2",
+        "save_interval=-1",
+        "wandb.mode=disabled",
+        "eval_render=false",
+        f"hydra.run.dir={run_dir}",
+    ]
+    env = {
+        **os.environ,
+        "WANDB_SILENT": "true",
+    }
+
+    result = subprocess.run(
+        command,
+        cwd=ROOT.parent,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=180,
+    )
+
+    assert result.returncode == 0, result.stdout[-4000:]
+    assert "Average inference time" in result.stdout
