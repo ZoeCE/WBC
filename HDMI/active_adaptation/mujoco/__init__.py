@@ -7,6 +7,7 @@ from .domain_randomization import (
 from .motion_reference import MujocoMotionReference, MujocoReferenceObservationFields
 from .observation_builder import MujocoObservationBuilder, MujocoPolicyState
 from .policy import MujocoPolicyAction, MujocoPolicyBundle, resolve_named_values
+from .policy_rollout import MujocoPolicyRolloutMetrics, run_mujoco_policy_rollout
 from .playback_parity import (
     MujocoRewardState,
     PlaybackParityMetrics,
@@ -35,6 +36,7 @@ __all__ = [
     "MujocoObservationBuilder",
     "MujocoPolicyAction",
     "MujocoPolicyBundle",
+    "MujocoPolicyRolloutMetrics",
     "MujocoPolicyState",
     "MujocoReferenceObservationFields",
     "MujocoRewardState",
@@ -52,4 +54,5 @@ __all__ = [
     "compute_playback_parity",
     "compute_reward_from_spec",
     "resolve_named_values",
+    "run_mujoco_policy_rollout",
 ]
