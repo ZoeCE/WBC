@@ -129,6 +129,8 @@ def test_policy_rollout_steps_mujoco_scene_and_reports_parity(tmp_path):
     assert torch.isfinite(metrics.q_l2).all()
     assert torch.isfinite(metrics.body_pos_l2).all()
     assert torch.allclose(metrics.actions, torch.zeros_like(metrics.actions))
+    assert metrics.action_rate_l2.shape == (2, 1, 1)
+    assert torch.allclose(metrics.action_rate_l2, torch.zeros_like(metrics.action_rate_l2))
 
 
 def test_policy_rollout_fills_object_observations_from_mujoco_scene(tmp_path):

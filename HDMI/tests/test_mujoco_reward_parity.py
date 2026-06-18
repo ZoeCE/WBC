@@ -332,3 +332,43 @@ def test_eef_contact_all_matches_hdmi_contact_reward_formula():
     active_reward = (contact_pos & contact_frc).float()
     expected = (active_reward * ref_object_contact.float() * 0.5 + 1 - ref_object_contact.float()).mean(dim=-1)
     assert torch.allclose(reward, expected.unsqueeze(-1))
+
+
+def test_action_rate_and_joint_torque_limit_rewards_match_hdmi_formulas():
+    action_buf = torch.tensor(
+        [
+            [[1.0, 0.5], [-1.0, -0.25]],
+            [[0.0, 0.5], [2.0, 1.5]],
+        ]
+    )
+
+    action_rate = reward_parity.action_rate_l2(action_buf)
+
+    action_diff = action_buf[:, :, 0] - action_buf[:, :, 1]
+    expected_action_rate = -action_diff.square().sum(dim=-1, keepdim=True)
+    assert torch.allclose(action_rate, expected_action_rate)
+
+    applied_torque = torch.tensor(
+        [
+            [8.0, -12.0, 2.0],
+            [-15.0, 3.0, 20.0],
+        ]
+    )
+    joint_effort_limits = torch.tensor(
+        [
+            [10.0, 10.0, 5.0],
+            [10.0, 10.0, 10.0],
+        ]
+    )
+
+    torque_limit = reward_parity.joint_torque_limits(
+        applied_torque=applied_torque,
+        joint_effort_limits=joint_effort_limits,
+        soft_factor=0.6,
+    )
+
+    soft_limits = joint_effort_limits * 0.6
+    violation_high = (applied_torque / soft_limits - 1.0).clamp_min(0.0)
+    violation_low = (-applied_torque / soft_limits - 1.0).clamp_min(0.0)
+    expected_torque_limit = -(violation_high + violation_low).sum(dim=1, keepdim=True)
+    assert torch.allclose(torque_limit, expected_torque_limit)

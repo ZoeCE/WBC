@@ -30,6 +30,8 @@ def test_mj_articulation_keeps_independent_batched_state_buffers():
     assert robot.data.default_joint_pos.shape == (2, robot.num_joints)
     assert robot.data.default_joint_vel.shape == (2, robot.num_joints)
     assert robot.data.applied_torque.shape == (2, robot.num_joints)
+    assert robot.data.joint_effort_limits.shape == (2, robot.num_joints)
+    assert torch.all(robot.data.joint_effort_limits > 0.0)
     assert robot._external_force_b.shape == (2, robot.num_bodies, 3)
 
     target = robot.data.default_joint_pos.clone()

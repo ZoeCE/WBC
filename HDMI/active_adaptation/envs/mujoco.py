@@ -54,6 +54,7 @@ class MJArticulationData:
     joint_vel_target: ArrayType = None
 
     applied_torque: ArrayType = None
+    joint_effort_limits: ArrayType = None
     projected_gravity_b: ArrayType = None
     
     body_vel_w: ArrayType = None
@@ -229,6 +230,7 @@ class MJArticulation:
         joint_damping = torch.zeros(self.num_joints)
         joint_pos_limits = _joint_pos_limits(self.mj_model, self.joint_mj_ids_read)
         joint_vel_limits = torch.full((self.num_joints,), float("inf"), dtype=torch.float32)
+        joint_effort_limits = _joint_effort_limits(self.mj_model, self.joint_mj_ids_read)
         
         for actuator_name, actuator_cfg in self.cfg.actuators.items():
             ids, _, values = string_utils.resolve_matching_names_values(actuator_cfg["stiffness"], self.joint_names_isaac)
@@ -250,6 +252,7 @@ class MJArticulation:
             joint_stiffness=joint_stiffness.expand(self.num_instances, -1).clone(),
             joint_damping=joint_damping.expand(self.num_instances, -1).clone(),
             applied_torque=torch.zeros(self.num_instances, self.num_joints),
+            joint_effort_limits=joint_effort_limits.expand(self.num_instances, -1).clone(),
             soft_joint_pos_limits=joint_pos_limits.expand(self.num_instances, -1, -1).clone(),
             soft_joint_vel_limits=joint_vel_limits.expand(self.num_instances, -1).clone(),
         )
@@ -554,6 +557,21 @@ def _joint_pos_limits(model: mujoco.MjModel, joint_ids: Sequence[int]) -> torch.
         else:
             limits[out_id, 0] = -float("inf")
             limits[out_id, 1] = float("inf")
+    return limits
+
+
+def _joint_effort_limits(model: mujoco.MjModel, joint_ids: Sequence[int]) -> torch.Tensor:
+    limits = torch.full((len(joint_ids),), float("inf"), dtype=torch.float32)
+    joint_id_to_out = {int(joint_id): out_id for out_id, joint_id in enumerate(joint_ids)}
+    for actuator_id in range(model.nu):
+        actuator = model.actuator(actuator_id)
+        if actuator.trntype != mujoco.mjtTrn.mjTRN_JOINT:
+            continue
+        out_id = joint_id_to_out.get(int(actuator.trnid[0]))
+        if out_id is None or not bool(model.actuator_forcelimited[actuator_id]):
+            continue
+        force_range = torch.as_tensor(model.actuator_forcerange[actuator_id], dtype=torch.float32).abs()
+        limits[out_id] = force_range.max()
     return limits
 
 

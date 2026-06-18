@@ -35,6 +35,8 @@ class MujocoRewardState:
     ref_joint_vel: torch.Tensor | None = None
     joint_pos_limits: torch.Tensor | None = None
     joint_names: Sequence[str] | None = None
+    applied_torque: torch.Tensor | None = None
+    joint_effort_limits: torch.Tensor | None = None
     object_pos_w: torch.Tensor | None = None
     ref_object_pos_w: torch.Tensor | None = None
     object_quat_w: torch.Tensor | None = None
@@ -52,6 +54,7 @@ class MujocoRewardState:
     contact_net_forces_w_history: torch.Tensor | None = None
     default_mass_total: torch.Tensor | None = None
     is_standing_env: torch.Tensor | None = None
+    action_buf: torch.Tensor | None = None
 
 
 def compute_playback_parity(
@@ -150,6 +153,8 @@ def build_reward_state_from_scene(
     joint_vel = None
     joint_pos_limits = None
     resolved_joint_names = None
+    applied_torque = None
+    joint_effort_limits = None
     if joint_names is not None or ref_joint_pos is not None or ref_joint_vel is not None:
         joint_indices = None
         if joint_names is not None:
@@ -159,10 +164,14 @@ def build_reward_state_from_scene(
             joint_vel = robot.data.joint_vel
             joint_pos_limits = robot.data.soft_joint_pos_limits
             resolved_joint_names = list(robot.joint_names)
+            applied_torque = robot.data.applied_torque
+            joint_effort_limits = robot.data.joint_effort_limits
         else:
             joint_pos = robot.data.joint_pos[:, joint_indices]
             joint_vel = robot.data.joint_vel[:, joint_indices]
             joint_pos_limits = robot.data.soft_joint_pos_limits[:, joint_indices]
+            applied_torque = robot.data.applied_torque[:, joint_indices]
+            joint_effort_limits = robot.data.joint_effort_limits[:, joint_indices]
 
     object_pos_w = None
     object_quat_w = None
@@ -206,6 +215,8 @@ def build_reward_state_from_scene(
         ref_joint_vel=ref_joint_vel,
         joint_pos_limits=joint_pos_limits,
         joint_names=resolved_joint_names,
+        applied_torque=applied_torque,
+        joint_effort_limits=joint_effort_limits,
         object_pos_w=object_pos_w,
         ref_object_pos_w=ref_object_pos_w,
         object_quat_w=object_quat_w,
@@ -465,6 +476,18 @@ def _compute_reward_term(term_name: str, params: dict[str, Any], state: MujocoRe
             joint_pos_limits=_select_state_joint_tensor(_required_state_tensor(state, "joint_pos_limits"), joint_indices),
             soft_factor=float(params.pop("soft_factor", 0.9)),
         )
+    if term_name == "action_rate_l2":
+        return reward_parity.action_rate_l2(_required_state_tensor(state, "action_buf"))
+    if term_name == "joint_torque_limits":
+        joint_indices = _state_joint_indices(state, params.pop("joint_names", None))
+        return reward_parity.joint_torque_limits(
+            applied_torque=_select_state_joint_tensor(
+                _required_state_tensor(state, "applied_torque"),
+                joint_indices,
+            ),
+            joint_effort_limits=_select_state_joint_tensor(_required_state_tensor(state, "joint_effort_limits"), joint_indices),
+            soft_factor=float(params.pop("soft_factor", 0.9)),
+        )
     if term_name == "feet_slip":
         body_names = _required_param(params, "body_names", term_name)
         body_indices = _state_body_indices(state, body_names)
@@ -571,6 +594,8 @@ def _state_batch_reference(state: MujocoRewardState) -> torch.Tensor:
         "root_pos_w",
         "object_pos_w",
         "contact_eef_pos_w",
+        "action_buf",
+        "applied_torque",
     ):
         value = getattr(state, name)
         if value is not None:
@@ -852,6 +877,40 @@ def _gather_scene_joint_pos_limits(robot: Any, joint_names: Sequence[str], objec
     return torch.stack(columns, dim=1)
 
 
+def _gather_scene_applied_torque(robot: Any, joint_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
+    robot_index = _name_to_index(robot.joint_names)
+    object_index = _name_to_index(object_view.joint_names) if object_view is not None else {}
+    object_zeros = None
+    columns = []
+    for joint_name in joint_names:
+        if joint_name in robot_index:
+            columns.append(robot.data.applied_torque[:, robot_index[joint_name]])
+        elif object_view is not None and joint_name in object_index:
+            if object_zeros is None:
+                object_zeros = torch.zeros(object_view.num_instances, dtype=robot.data.applied_torque.dtype)
+            columns.append(object_zeros)
+        else:
+            raise ValueError(f"missing playback joint name in MuJoCo scene: {joint_name!r}.")
+    return torch.stack(columns, dim=1)
+
+
+def _gather_scene_joint_effort_limits(robot: Any, joint_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
+    robot_index = _name_to_index(robot.joint_names)
+    object_index = _name_to_index(object_view.joint_names) if object_view is not None else {}
+    object_limits = None
+    columns = []
+    for joint_name in joint_names:
+        if joint_name in robot_index:
+            columns.append(robot.data.joint_effort_limits[:, robot_index[joint_name]])
+        elif object_view is not None and joint_name in object_index:
+            if object_limits is None:
+                object_limits = torch.full((object_view.num_instances,), float("inf"), dtype=robot.data.applied_torque.dtype)
+            columns.append(object_limits)
+        else:
+            raise ValueError(f"missing playback joint name in MuJoCo scene: {joint_name!r}.")
+    return torch.stack(columns, dim=1)
+
+
 def _gather_scene_body_pos_w(robot: Any, body_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
     return _gather_scene_body_tensor(robot, body_names, object_view, "body_link_pos_w")
 
@@ -932,6 +991,12 @@ def _build_kinematic_reward_state(
     contact_target_pos_w = None
     eef_contact_forces_b = None
     ref_object_contact = None
+    applied_torque = _gather_scene_applied_torque(
+        robot=robot,
+        joint_names=reference.requested_joint_names,
+        object_view=object_view,
+    )
+    joint_effort_limits = _gather_scene_joint_effort_limits(robot, reference.requested_joint_names, object_view)
     if object_view is not None:
         object_body_index = 0
         if object_body_name is not None and object_body_name in object_view.body_names:
@@ -1000,6 +1065,8 @@ def _build_kinematic_reward_state(
         ref_joint_vel=ref_joint_vel,
         joint_pos_limits=actual_joint_pos_limits,
         joint_names=list(reference.requested_joint_names),
+        applied_torque=applied_torque,
+        joint_effort_limits=joint_effort_limits,
         object_pos_w=object_pos_w,
         ref_object_pos_w=ref_object_pos_w,
         object_quat_w=object_quat_w,

@@ -6,6 +6,7 @@ import torch
 from .motion_reference import MujocoMotionReference
 from .observation_builder import MujocoPolicyState
 from .policy import MujocoPolicyAction, MujocoPolicyBundle
+from . import reward_parity
 from .playback_parity import compute_playback_parity
 
 
@@ -15,6 +16,7 @@ class MujocoPolicyRolloutMetrics:
     body_pos_l2: torch.Tensor
     actions: torch.Tensor
     joint_position_targets: torch.Tensor
+    action_rate_l2: torch.Tensor
 
 
 def run_mujoco_policy_rollout(
@@ -65,6 +67,7 @@ def run_mujoco_policy_rollout(
     joint_targets: list[torch.Tensor] = []
     q_l2: list[torch.Tensor] = []
     body_pos_l2: list[torch.Tensor] = []
+    action_rate_l2: list[torch.Tensor] = []
 
     for rollout_index, step_t in enumerate(steps_t):
         step = int(step_t.item())
@@ -101,6 +104,10 @@ def run_mujoco_policy_rollout(
         body_pos_l2.append(metrics.body_pos_l2)
         actions.append(action.raw_action.detach().cpu())
         joint_targets.append(action.joint_position_target.detach().cpu())
+        action_buf = torch.stack((action.raw_action.detach(), action_history[:, :, 0]), dim=2)
+        action_rate_l2.append(
+            reward_parity.action_rate_l2(action_buf).detach().cpu()
+        )
 
         applied_action = action.raw_action.detach()
         action_history = action_history.roll(1, dims=2)
@@ -111,6 +118,7 @@ def run_mujoco_policy_rollout(
         body_pos_l2=torch.stack(body_pos_l2),
         actions=torch.stack(actions),
         joint_position_targets=torch.stack(joint_targets),
+        action_rate_l2=torch.stack(action_rate_l2),
     )
 
 

@@ -515,3 +515,50 @@ def test_kinematic_motion_playback_parity_builds_contact_reward_from_motion_refe
 
     assert metrics.reward.shape == (2, 2, 1)
     assert torch.isfinite(metrics.reward).all()
+
+
+def test_reward_from_spec_supports_action_rate_and_joint_torque_limits():
+    state = playback_parity.MujocoRewardState(
+        action_buf=torch.tensor(
+            [
+                [[1.0, 0.5], [-1.0, -0.25]],
+                [[0.0, 0.5], [2.0, 1.5]],
+            ]
+        ),
+        joint_names=["hip", "knee", "elbow"],
+        applied_torque=torch.tensor(
+            [
+                [8.0, -12.0, 2.0],
+                [-15.0, 3.0, 20.0],
+            ]
+        ),
+        joint_effort_limits=torch.tensor(
+            [
+                [10.0, 10.0, 5.0],
+                [10.0, 10.0, 10.0],
+            ]
+        ),
+    )
+    reward_cfg = {
+        "loco": {
+            "action_rate_l2": {"weight": 0.25},
+            "joint_torque_limits": {
+                "weight": 2.0,
+                "joint_names": ["hip", "elbow"],
+                "soft_factor": 0.6,
+            },
+        }
+    }
+
+    reward = playback_parity.compute_reward_from_spec(reward_cfg, state)
+
+    action_diff = state.action_buf[:, :, 0] - state.action_buf[:, :, 1]
+    action_rate = -action_diff.square().sum(dim=-1, keepdim=True)
+    joint_ids = [0, 2]
+    applied_torque = state.applied_torque[:, joint_ids]
+    soft_limits = state.joint_effort_limits[:, joint_ids] * 0.6
+    violation_high = (applied_torque / soft_limits - 1.0).clamp_min(0.0)
+    violation_low = (-applied_torque / soft_limits - 1.0).clamp_min(0.0)
+    torque_limit = -(violation_high + violation_low).sum(dim=1, keepdim=True)
+    expected = 0.25 * action_rate + 2.0 * torque_limit
+    assert torch.allclose(reward, expected)

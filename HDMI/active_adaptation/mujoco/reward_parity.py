@@ -500,6 +500,47 @@ def feet_air_time(
     return reward
 
 
+def action_rate_l2(action_buf: torch.Tensor) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI action_rate_l2 reward."""
+    if action_buf.ndim != 3:
+        raise ValueError(f"action_buf must have shape (num_envs, action_dim, history), got {tuple(action_buf.shape)}.")
+    if action_buf.shape[2] < 2:
+        raise ValueError(f"action_buf needs at least 2 history steps, got {action_buf.shape[2]}.")
+    action_diff = action_buf[:, :, 0] - action_buf[:, :, 1]
+    return -action_diff.square().sum(dim=-1, keepdim=True)
+
+
+def joint_torque_limits(
+    applied_torque: torch.Tensor,
+    joint_effort_limits: torch.Tensor,
+    soft_factor: float = 0.9,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI joint_torque_limits reward."""
+    if applied_torque.ndim != 2:
+        raise ValueError(f"applied_torque must have shape (num_envs, num_joints), got {tuple(applied_torque.shape)}.")
+    if joint_effort_limits.shape != applied_torque.shape:
+        raise ValueError(
+            f"joint_effort_limits shape {tuple(joint_effort_limits.shape)} != applied_torque shape {tuple(applied_torque.shape)}."
+        )
+    if soft_factor < 0:
+        raise ValueError(f"soft_factor must be non-negative, got {soft_factor}.")
+
+    soft_limits = joint_effort_limits * float(soft_factor)
+    finite = torch.isfinite(soft_limits) & (soft_limits > 0.0)
+    safe_limits = torch.where(finite, soft_limits, torch.ones_like(soft_limits))
+    violation_high = torch.where(
+        finite,
+        (applied_torque / safe_limits - 1.0).clamp_min(0.0),
+        torch.zeros_like(applied_torque),
+    )
+    violation_low = torch.where(
+        finite,
+        (-applied_torque / safe_limits - 1.0).clamp_min(0.0),
+        torch.zeros_like(applied_torque),
+    )
+    return -(violation_high + violation_low).sum(dim=1, keepdim=True)
+
+
 def _batch_column(value: float | torch.Tensor, reference: torch.Tensor, name: str) -> torch.Tensor:
     tensor = torch.as_tensor(value, dtype=reference.dtype, device=reference.device)
     if tensor.ndim == 0:
