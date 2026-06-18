@@ -1,6 +1,7 @@
 import importlib
 from pathlib import Path
 
+import numpy as np
 import active_adaptation as aa
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
@@ -24,6 +25,57 @@ def test_mujoco_articulation_uses_independent_models_per_env_for_model_randomiza
 
     assert float(robot.mj_models[0].body_mass[robot.body_adrs_read[0]]) == original_env0_mass
     assert float(robot.mj_models[1].body_mass[robot.body_adrs_read[0]]) == original_env0_mass + 10.0
+
+
+def test_mujoco_articulation_applies_motor_parameter_randomization_per_env():
+    module = _mujoco_env_module()
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    robot = module.MJArticulation(ROBOTS["g1_29dof"], num_envs=2)
+    joint_ids = torch.tensor([0, 1])
+    stiffness = torch.tensor([[11.0, 12.0], [21.0, 22.0]])
+    damping = torch.tensor([[1.1, 1.2], [2.1, 2.2]])
+    armature = torch.tensor([[0.01, 0.02], [0.03, 0.04]])
+    friction = torch.tensor([[0.5, 0.6], [0.7, 0.8]])
+
+    robot.write_joint_stiffness_to_sim(stiffness, joint_ids=joint_ids, env_ids=torch.arange(2))
+    robot.write_joint_damping_to_sim(damping, joint_ids=joint_ids, env_ids=torch.arange(2))
+    robot.write_joint_armature_to_sim(armature, joint_ids=joint_ids, env_ids=torch.arange(2))
+    robot.write_joint_friction_coefficient_to_sim(friction, joint_ids=joint_ids, env_ids=torch.arange(2))
+
+    dof_adrs = robot.joint_qveladr_read[joint_ids.numpy()]
+    assert torch.allclose(robot.data.joint_stiffness[:, joint_ids], stiffness)
+    assert torch.allclose(robot.data.joint_damping[:, joint_ids], damping)
+    assert torch.allclose(
+        torch.as_tensor(
+            np.stack([robot.mj_models[0].dof_armature[dof_adrs], robot.mj_models[1].dof_armature[dof_adrs]])
+        ),
+        armature.double(),
+    )
+    assert torch.allclose(
+        torch.as_tensor(
+            np.stack(
+                [robot.mj_models[0].dof_frictionloss[dof_adrs], robot.mj_models[1].dof_frictionloss[dof_adrs]]
+            )
+        ),
+        friction.double(),
+    )
+
+
+def test_mujoco_root_physx_view_sets_dof_friction_coefficients_per_env():
+    module = _mujoco_env_module()
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    robot = module.MJArticulation(ROBOTS["g1_29dof"], num_envs=2)
+    frictions = torch.zeros(2, robot.num_joints)
+    frictions[0, :2] = torch.tensor([0.11, 0.12])
+    frictions[1, :2] = torch.tensor([0.21, 0.22])
+
+    robot.root_physx_view.set_dof_friction_coefficients(frictions, indices=torch.arange(2))
+
+    dof_adrs = robot.joint_qveladr_read[:2]
+    assert np.allclose(robot.mj_models[0].dof_frictionloss[dof_adrs], frictions[0, :2].numpy())
+    assert np.allclose(robot.mj_models[1].dof_frictionloss[dof_adrs], frictions[1, :2].numpy())
 
 
 def test_mujoco_object_root_physx_view_applies_body_randomization_per_env():

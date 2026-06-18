@@ -67,6 +67,31 @@ def test_mj_articulation_writes_joint_and_root_state_only_to_selected_envs():
     assert not np.allclose(robot.mj_datas[0].qpos[robot.joint_qposadr_read[joint_ids]], joint_pos[0].numpy())
 
 
+def test_mj_articulation_applies_external_wrench_to_selected_bodies():
+    module = _mujoco_env_module()
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    robot = module.MJArticulation(ROBOTS.with_object("g1_29dof", object_asset_name="box"), num_envs=2)
+    body_ids = [0]
+    forces_b = torch.tensor([[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]])
+    torques_b = torch.tensor([[[0.1, 0.2, 0.3]], [[0.4, 0.5, 0.6]]])
+
+    robot.set_external_force_and_torque(forces_b, torques_b, body_ids=body_ids)
+    robot.write_data_to_sim()
+
+    expected_force_w = module.quat_rotate(robot.data.root_quat_w[:, None, :], forces_b)
+    expected_torque_w = module.quat_rotate(robot.data.root_quat_w[:, None, :], torques_b)
+    assert int(robot.body_adrs_read[body_ids[0]]) != int(robot.body_adrs_write[body_ids[0]])
+    body_adr = int(robot.body_adrs_read[body_ids[0]])
+
+    assert robot.has_external_wrench
+    assert torch.allclose(robot._external_force_b[:, body_ids], forces_b)
+    assert torch.allclose(robot._external_torque_b[:, body_ids], torques_b)
+    for env_id, data in enumerate(robot.mj_datas):
+        assert np.allclose(data.xfrc_applied[body_adr, :3], expected_force_w[env_id, 0].numpy())
+        assert np.allclose(data.xfrc_applied[body_adr, 3:], expected_torque_w[env_id, 0].numpy())
+
+
 def test_mj_scene_uses_requested_num_envs_without_viewer():
     module = _mujoco_env_module()
 

@@ -444,6 +444,25 @@ class MJArticulation:
         else:
             self._data.joint_vel_target[env_ids_t[:, None], joint_ids_n] = target_t
 
+    def set_external_force_and_torque(
+        self,
+        forces: ArrayType,
+        torques: ArrayType,
+        body_ids: ArrayType = None,
+        env_ids: ArrayType = None,
+    ):
+        env_ids_t = self._normalize_env_ids(env_ids)
+        body_ids_n = self._normalize_body_ids(body_ids)
+        forces_t = self._wrench_rows(forces, env_ids_t, body_ids_n)
+        torques_t = self._wrench_rows(torques, env_ids_t, body_ids_n)
+        if isinstance(body_ids_n, slice):
+            self._external_force_b[env_ids_t] = forces_t
+            self._external_torque_b[env_ids_t] = torques_t
+        else:
+            self._external_force_b[env_ids_t[:, None], body_ids_n] = forces_t
+            self._external_torque_b[env_ids_t[:, None], body_ids_n] = torques_t
+        self.has_external_wrench = True
+
     def write_data_to_sim(self):
         current_pos = torch.stack(
             [torch.as_tensor(data.qpos[self.joint_qposadr_read].copy(), dtype=torch.float32) for data in self.mj_datas]
@@ -465,8 +484,8 @@ class MJArticulation:
             force_w = quat_rotate(self._data.root_quat_w[:, None, :], self._external_force_b).detach().cpu().numpy()
             torque_w = quat_rotate(self._data.root_quat_w[:, None, :], self._external_torque_b).detach().cpu().numpy()
             for env_id, data in enumerate(self.mj_datas):
-                data.xfrc_applied[self.body_adrs_write, :3] = force_w[env_id]
-                data.xfrc_applied[self.body_adrs_write, 3:] = torque_w[env_id]
+                data.xfrc_applied[self.body_adrs_read, :3] = force_w[env_id]
+                data.xfrc_applied[self.body_adrs_read, 3:] = torque_w[env_id]
 
     def write_joint_position_to_sim(self, joint_pos: ArrayType, joint_ids: ArrayType = None, env_ids: ArrayType = None):
         self.write_joint_state_to_sim(joint_pos, None, joint_ids=joint_ids, env_ids=env_ids)
@@ -497,6 +516,31 @@ class MJArticulation:
             mujoco.mj_forward(self.mj_models[env_id], data)
         self.update(0.0)
 
+    def write_joint_stiffness_to_sim(self, stiffness: ArrayType, joint_ids: ArrayType = None, env_ids: ArrayType = None):
+        self._write_joint_parameter_tensor("joint_stiffness", stiffness, joint_ids=joint_ids, env_ids=env_ids)
+
+    def write_joint_damping_to_sim(self, damping: ArrayType, joint_ids: ArrayType = None, env_ids: ArrayType = None):
+        self._write_joint_parameter_tensor("joint_damping", damping, joint_ids=joint_ids, env_ids=env_ids)
+
+    def write_joint_armature_to_sim(self, armature: ArrayType, joint_ids: ArrayType = None, env_ids: ArrayType = None):
+        self._write_joint_model_dof_parameter("dof_armature", armature, joint_ids=joint_ids, env_ids=env_ids)
+
+    def write_joint_friction_coefficient_to_sim(
+        self,
+        friction: ArrayType,
+        joint_ids: ArrayType = None,
+        env_ids: ArrayType = None,
+    ):
+        self._write_joint_model_dof_parameter("dof_frictionloss", friction, joint_ids=joint_ids, env_ids=env_ids)
+
+    def write_joint_friction_to_sim(
+        self,
+        friction: ArrayType,
+        joint_ids: ArrayType = None,
+        env_ids: ArrayType = None,
+    ):
+        self.write_joint_friction_coefficient_to_sim(friction, joint_ids=joint_ids, env_ids=env_ids)
+
     def _write_joint_state_to_data(self, data, joint_pos: torch.Tensor | None, joint_vel: torch.Tensor | None, joint_ids):
         if joint_pos is not None:
             joint_pos_all = torch.as_tensor(data.qpos[self.joint_qposadr_read].copy(), dtype=torch.float32)
@@ -506,6 +550,71 @@ class MJArticulation:
             joint_vel_all = torch.as_tensor(data.qvel[self.joint_qveladr_read].copy(), dtype=torch.float32)
             joint_vel_all[joint_ids] = joint_vel.detach().cpu().to(dtype=torch.float32)
             data.qvel[self.joint_qveladr_read] = joint_vel_all.numpy()
+
+    def _write_joint_parameter_tensor(
+        self,
+        field_name: str,
+        values: ArrayType,
+        joint_ids: ArrayType = None,
+        env_ids: ArrayType = None,
+    ):
+        env_ids_t = self._normalize_env_ids(env_ids)
+        joint_ids_n = self._normalize_joint_ids(joint_ids)
+        values_t = self._joint_parameter_rows(values, env_ids_t, joint_ids_n)
+        target = getattr(self._data, field_name)
+        if isinstance(joint_ids_n, slice):
+            target[env_ids_t] = values_t
+        else:
+            target[env_ids_t[:, None], joint_ids_n] = values_t
+
+    def _write_joint_model_dof_parameter(
+        self,
+        field_name: str,
+        values: ArrayType,
+        joint_ids: ArrayType = None,
+        env_ids: ArrayType = None,
+    ):
+        env_ids_t = self._normalize_env_ids(env_ids)
+        joint_ids_n = self._normalize_joint_ids(joint_ids)
+        values_t = self._joint_parameter_rows(values, env_ids_t, joint_ids_n)
+        joint_ids_idx = joint_ids_n.detach().cpu().numpy() if isinstance(joint_ids_n, torch.Tensor) else joint_ids_n
+        dof_adrs = self.joint_qveladr_read[joint_ids_idx]
+        for row, env_id in enumerate(env_ids_t.tolist()):
+            getattr(self.mj_models[env_id], field_name)[dof_adrs] = values_t[row].detach().cpu().numpy()
+
+    def _joint_parameter_rows(self, values: ArrayType, env_ids: torch.Tensor, joint_ids) -> torch.Tensor:
+        values_t = self._rows_for_envs(values, env_ids)
+        expected_joints = self.num_joints if isinstance(joint_ids, slice) else int(joint_ids.numel())
+        expected_shape = (env_ids.numel(), expected_joints)
+        if tuple(values_t.shape) != expected_shape:
+            raise ValueError(f"Expected joint parameter shape {expected_shape}, got {tuple(values_t.shape)}.")
+        return values_t
+
+    def _normalize_body_ids(self, body_ids: ArrayType | int | slice | None):
+        if body_ids is None:
+            return slice(None)
+        if isinstance(body_ids, slice):
+            return body_ids
+        if isinstance(body_ids, int):
+            body_ids_t = torch.tensor([body_ids], dtype=torch.long)
+        else:
+            body_ids_t = torch.as_tensor(body_ids, dtype=torch.long).reshape(-1)
+        if body_ids_t.numel() and (torch.any(body_ids_t < 0) or torch.any(body_ids_t >= self.num_bodies)):
+            raise ValueError(f"body_ids must be in [0, {self.num_bodies}), got {body_ids_t.tolist()}.")
+        return body_ids_t
+
+    def _wrench_rows(self, values: ArrayType, env_ids: torch.Tensor, body_ids) -> torch.Tensor:
+        values_t = torch.as_tensor(values, dtype=torch.float32)
+        expected_bodies = self.num_bodies if isinstance(body_ids, slice) else int(body_ids.numel())
+        expected_subset = (env_ids.numel(), expected_bodies, 3)
+        expected_all = (self.num_instances, expected_bodies, 3)
+        if tuple(values_t.shape) == expected_subset:
+            return values_t.clone()
+        if tuple(values_t.shape) == expected_all:
+            return values_t.index_select(0, env_ids).clone()
+        if tuple(values_t.shape) == (expected_bodies, 3):
+            return values_t.unsqueeze(0).expand(env_ids.numel(), -1, -1).clone()
+        raise ValueError(f"Expected wrench shape {expected_subset} or {expected_all}, got {tuple(values_t.shape)}.")
 
     def _normalize_env_ids(self, env_ids: ArrayType | int | slice | None) -> torch.Tensor:
         if env_ids is None or (isinstance(env_ids, slice) and env_ids == slice(None)):
@@ -671,6 +780,13 @@ class MJRootPhysxView:
             self._material_properties[env_id] = materials_t[row]
             if self.max_shapes:
                 self.asset.mj_models[env_id].geom_friction[self.asset.geom_adrs, 0] = materials_t[row, :, 1].detach().cpu().numpy()
+
+    def set_dof_friction_coefficients(self, frictions: ArrayType, indices: ArrayType):
+        indices_t = self._normalize_indices(indices)
+        frictions_t = self._rows_for_indices(frictions, indices_t, trailing_shape=(self.asset.num_joints,))
+        dof_adrs = self.asset.joint_qveladr_read
+        for row, env_id in enumerate(indices_t.tolist()):
+            self.asset.mj_models[env_id].dof_frictionloss[dof_adrs] = frictions_t[row].detach().cpu().numpy()
 
     def _read_material_properties(self):
         materials = torch.zeros(self.asset.num_instances, self.max_shapes, 3)
