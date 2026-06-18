@@ -153,12 +153,35 @@ def _write_reference_frame_to_scene(scene: Any, reference: MujocoMotionReference
     root_state = torch.cat([root_pos, root_quat, torch.zeros(scene.num_envs, 6)], dim=-1)
     robot.write_root_state_to_sim(root_state)
 
-    joint_names = reference.requested_joint_names
+    joint_names = _reference_robot_joint_names(scene, robot, reference.requested_joint_names)
+    if not joint_names:
+        return
     joint_ids, found_names = robot.find_joints(joint_names, preserve_order=True)
     if found_names != joint_names:
         raise ValueError(f"Reference joint order mismatch: expected {joint_names}, got {found_names}.")
     joint_pos = _reference_joint_pos(reference, joint_names, step, scene.num_envs)
     robot.write_joint_state_to_sim(joint_pos, torch.zeros_like(joint_pos), joint_ids=joint_ids)
+
+
+def _reference_robot_joint_names(scene: Any, robot: Any, joint_names: Sequence[str]) -> list[str]:
+    robot_joint_names = set(robot.joint_names)
+    object_joint_names: set[str] = set()
+    for object_view in (*scene.articulations.values(), *scene.rigid_objects.values()):
+        if object_view is robot:
+            continue
+        object_joint_names.update(getattr(object_view, "joint_names", ()) or ())
+
+    robot_reference_names: list[str] = []
+    missing_names: list[str] = []
+    for joint_name in joint_names:
+        if joint_name in robot_joint_names:
+            robot_reference_names.append(joint_name)
+        elif joint_name not in object_joint_names:
+            missing_names.append(joint_name)
+
+    if missing_names:
+        raise ValueError(f"Reference joints are absent from MuJoCo scene: {missing_names}.")
+    return robot_reference_names
 
 
 def _scene_body_pos_w(scene: Any, body_names: Sequence[str]) -> torch.Tensor:

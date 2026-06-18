@@ -17,9 +17,11 @@ from active_adaptation.assets_mjcf import ROBOTS
 from active_adaptation.mujoco import (
     MujocoMotionReference,
     MujocoPolicyBundle,
+    MujocoPolicyRolloutMetrics,
     MujocoPolicyState,
     PlaybackParityMetrics,
     compute_kinematic_motion_playback_parity,
+    run_mujoco_policy_rollout,
 )
 
 
@@ -49,7 +51,11 @@ def run_parity(
     num_envs: int = 1,
     reward_config: Mapping[str, Any] | None = None,
     policy_path: str | Path | None = None,
+    policy_rollout: bool = False,
 ) -> dict[str, Any]:
+    if policy_rollout and policy_path is None:
+        raise ValueError("--policy-rollout requires --policy-path.")
+
     motion_dir = Path(motion_dir)
     meta = _load_motion_meta(motion_dir)
     body_names = list(meta["body_names"])
@@ -102,6 +108,17 @@ def run_parity(
                 num_envs=num_envs,
             )
         )
+    if policy_rollout:
+        summary.update(
+            summarize_policy_rollout_metrics(
+                run_mujoco_policy_rollout(
+                    scene=scene,
+                    policy_bundle=MujocoPolicyBundle.load(policy_path),
+                    reference=reference,
+                    steps=steps,
+                )
+            )
+        )
     return summary
 
 
@@ -130,6 +147,17 @@ def summarize_metrics(
     return summary
 
 
+def summarize_policy_rollout_metrics(metrics: MujocoPolicyRolloutMetrics) -> dict[str, Any]:
+    return {
+        "policy_rollout_q_l2_shape": list(metrics.q_l2.shape),
+        "policy_rollout_q_l2_max": float(metrics.q_l2.max().item()),
+        "policy_rollout_body_pos_l2_shape": list(metrics.body_pos_l2.shape),
+        "policy_rollout_body_pos_l2_max": float(metrics.body_pos_l2.max().item()),
+        "policy_rollout_action_shape": list(metrics.actions.shape),
+        "policy_rollout_joint_target_shape": list(metrics.joint_position_targets.shape),
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     with contextlib.redirect_stdout(sys.stderr):
@@ -148,6 +176,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             num_envs=args.num_envs,
             reward_config=reward_config,
             policy_path=args.policy_path,
+            policy_rollout=args.policy_rollout,
         )
     print(json.dumps(summary, sort_keys=True))
     return 0
@@ -173,6 +202,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--reward-config-json", default=None)
     parser.add_argument("--task-yaml", default=None, help="HDMI task YAML. Its reward section is used for playback.")
     parser.add_argument("--policy-path", default=None, help="Exported HDMI policy .pt to smoke-run on playback states.")
+    parser.add_argument(
+        "--policy-rollout",
+        action="store_true",
+        help="Run the exported policy in a closed-loop MuJoCo rollout and report rollout parity metrics.",
+    )
     return parser.parse_args(argv)
 
 

@@ -88,6 +88,32 @@ def _write_policy_bundle(tmp_path, action_dim):
     return policy_path
 
 
+def _write_rollout_policy_bundle(tmp_path, joint_name):
+    module = TensorDictModule(
+        torch.nn.Linear(1, 1, bias=False),
+        in_keys=["policy"],
+        out_keys=["action"],
+    )
+    module.module.weight.data.zero_()
+    policy_path = tmp_path / "policy-rollout-final.pt"
+    torch.save(module, policy_path)
+    (tmp_path / "policy-rollout-final.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "observation": {
+                    "policy": {
+                        "applied_action": {},
+                    },
+                },
+                "action_scale": 0.5,
+                "policy_joint_names": [joint_name],
+                "default_joint_pos": {joint_name: 0.0},
+            }
+        )
+    )
+    return policy_path
+
+
 def _write_object_policy_bundle(tmp_path, object_body_name):
     module = TensorDictModule(
         torch.nn.Linear(7, 2, bias=False),
@@ -284,6 +310,41 @@ def test_mujoco_playback_parity_cli_reports_policy_action_summary(tmp_path, caps
     assert summary["policy_action_shape"] == [2, 1, 2]
     assert summary["policy_joint_target_shape"] == [2, 1, 2]
     assert summary["policy_action_max_abs"] == 0.0
+
+
+def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path, capsys):
+    object_body_name, object_joint_name = _write_motion_dir(tmp_path)
+    joint_name = json.loads((tmp_path / "meta.json").read_text())["joint_names"][0]
+    policy_path = _write_rollout_policy_bundle(tmp_path, joint_name)
+    script = _load_cli_module()
+
+    exit_code = script.main(
+        [
+            "--motion-dir",
+            str(tmp_path),
+            "--object-name",
+            "door",
+            "--object-body-name",
+            object_body_name,
+            "--object-joint-name",
+            object_joint_name,
+            "--policy-path",
+            str(policy_path),
+            "--policy-rollout",
+            "--steps",
+            "0,1",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["policy_path"] == str(policy_path)
+    assert summary["policy_rollout_q_l2_shape"] == [2, 1]
+    assert summary["policy_rollout_body_pos_l2_shape"] == [2, 1]
+    assert summary["policy_rollout_action_shape"] == [2, 1, 1]
+    assert summary["policy_rollout_joint_target_shape"] == [2, 1, 1]
+    assert summary["policy_rollout_q_l2_max"] >= 0.0
+    assert summary["policy_rollout_body_pos_l2_max"] >= 0.0
 
 
 def test_mujoco_playback_parity_cli_fills_object_policy_observations_from_reference(tmp_path, capsys):
