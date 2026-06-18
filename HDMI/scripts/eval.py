@@ -7,7 +7,7 @@ import sys
 from tqdm import tqdm
 from omegaconf import OmegaConf, DictConfig
 
-from isaaclab.app import AppLauncher
+import active_adaptation as aa
 
 import wandb
 import logging
@@ -23,8 +23,7 @@ def main(cfg: DictConfig):
     OmegaConf.resolve(cfg)
     OmegaConf.set_struct(cfg, False)
     
-    app_launcher = AppLauncher(OmegaConf.to_container(cfg.app))
-    simulation_app = app_launcher.app
+    simulation_app = _configure_backend_and_app(cfg)
 
     env, agent, vecnorm = make_env_policy(cfg)
     
@@ -72,9 +71,24 @@ def main(cfg: DictConfig):
         OmegaConf.save(info, f)
     print(termcolor.colored(f"Saved results to: {path}", "green"))
 
-    os._exit(0)
     env.close()
-    simulation_app.close()
+    if simulation_app is not None:
+        simulation_app.close()
+    if simulation_app is not None:
+        os._exit(0)
+    return info
+
+
+def _configure_backend_and_app(cfg: DictConfig):
+    backend = cfg.get("backend", aa.get_backend())
+    aa.set_backend(backend)
+    if backend == "mujoco":
+        return None
+
+    from isaaclab.app import AppLauncher
+
+    app_launcher = AppLauncher(OmegaConf.to_container(cfg.app))
+    return app_launcher.app
 
 
 if __name__ == "__main__":

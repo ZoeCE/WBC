@@ -34,6 +34,26 @@ def _load_play_module():
     return module
 
 
+def _load_eval_module():
+    script_path = ROOT / "scripts/eval.py"
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    spec = importlib.util.spec_from_file_location("eval_script_for_backend_test", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_eval_run_module():
+    script_path = ROOT / "scripts/eval_run.py"
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    spec = importlib.util.spec_from_file_location("eval_run_script_for_backend_test", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _compose_mujoco_train_smoke_cfg():
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
@@ -67,6 +87,11 @@ def test_play_config_declares_backend_override_key():
     assert cfg["backend"] == "isaac"
 
 
+def test_eval_config_declares_backend_override_key():
+    cfg = yaml.safe_load((ROOT / "cfg/eval.yaml").read_text())
+    assert cfg["backend"] == "isaac"
+
+
 def test_mujoco_backend_sets_backend_without_launching_isaac_app():
     aa.set_backend("isaac")
     script = _load_train_module()
@@ -93,6 +118,29 @@ def test_play_mujoco_backend_sets_backend_without_launching_isaac_app():
         assert aa.get_backend() == "mujoco"
     finally:
         aa.set_backend("isaac")
+
+
+def test_eval_mujoco_backend_sets_backend_without_launching_isaac_app():
+    aa.set_backend("isaac")
+    script = _load_eval_module()
+    cfg = OmegaConf.create({"backend": "mujoco", "app": {"headless": True, "enable_cameras": False}})
+
+    try:
+        simulation_app = script._configure_backend_and_app(cfg)
+
+        assert simulation_app is None
+        assert aa.get_backend() == "mujoco"
+    finally:
+        aa.set_backend("isaac")
+
+
+def test_eval_run_parser_accepts_mujoco_playback_flag():
+    script = _load_eval_run_module()
+
+    args = script._parse_args(["--run_path", "entity/project/run", "--play-mujoco"])
+
+    assert args.run_path == "entity/project/run"
+    assert args.play_mujoco is True
 
 
 def test_play_mujoco_asset_meta_uses_mjcf_cfg_without_isaac_assets_import():

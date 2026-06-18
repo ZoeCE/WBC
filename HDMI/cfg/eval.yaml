@@ -1,6 +1,7 @@
 # hydra.job.chdir: false
 
 headless: true
+backend: isaac
 
 app:
   headless: ${..headless}

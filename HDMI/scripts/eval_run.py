@@ -6,7 +6,6 @@ import hydra
 import argparse
 
 from omegaconf import OmegaConf
-from isaaclab.app import AppLauncher
 from scripts.play import main as play_main
 from scripts.eval import main as eval_main
 
@@ -15,20 +14,25 @@ eval = eval_main.__wrapped__
 
 FILE_PATH = os.path.dirname(__file__)
 
-def main():
+
+def _parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("-r", "--run_path", type=str)
     parser.add_argument("--task", type=str, default=None)
     parser.add_argument("-p", "--play", action="store_true", default=False)
+    parser.add_argument("--play-mujoco", action="store_true", default=False)
     # whether to override terrain and command
     parser.add_argument("-t", "--terrain", action="store_true", default=False)
     parser.add_argument("-c", "--command", action="store_true", default=False)
     parser.add_argument("-o", "--teleop", action="store_true", default=False)
-    
     parser.add_argument("-e", "--export", action="store_true", default=False)
     parser.add_argument("-v", "--video", action="store_true", default=False)
     parser.add_argument("-i", "--interations", type=int, default=None)
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main():
+    args = _parse_args()
 
     api = wandb.Api()
     
@@ -100,7 +104,13 @@ def main():
             cfg["task"]["command"] = _cfg.task.command
     
     assert not (args.play and args.play_mujoco), "Cannot play and play_mujoco at the same time"
-    if args.play:
+    if args.play_mujoco:
+        cfg["backend"] = "mujoco"
+        cfg["app"]["headless"] = True
+        cfg["task"]["num_envs"] = 1
+        cfg["export_policy"] = args.export
+        play(cfg)
+    elif args.play:
         cfg["app"]["headless"] = False
         cfg["task"]["num_envs"] = 16
         cfg["export_policy"] = args.export
