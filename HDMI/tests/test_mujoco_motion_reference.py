@@ -23,6 +23,16 @@ def _write_motion(tmp_path):
     body_ang_vel_w = time * 20.0 + body_ids + np.array([0.4, 0.5, 0.6])
     joint_pos = joint_time * 10.0 + joint_ids + 0.01
     joint_vel = joint_time * 20.0 + joint_ids + 0.02
+    object_contact = np.array(
+        [
+            [True, False],
+            [True, True],
+            [False, True],
+            [False, False],
+            [True, False],
+        ],
+        dtype=np.bool_,
+    )
 
     np.savez_compressed(
         tmp_path / "motion.npz",
@@ -32,15 +42,16 @@ def _write_motion(tmp_path):
         body_ang_vel_w=body_ang_vel_w,
         joint_pos=joint_pos,
         joint_vel=joint_vel,
+        object_contact=object_contact,
     )
     (tmp_path / "meta.json").write_text(
         json.dumps({"body_names": body_names, "joint_names": joint_names, "fps": 50.0})
     )
-    return body_pos_w, body_quat_w, body_lin_vel_w, body_ang_vel_w, joint_pos, joint_vel
+    return body_pos_w, body_quat_w, body_lin_vel_w, body_ang_vel_w, joint_pos, joint_vel, object_contact
 
 
 def test_motion_reference_slices_future_frames_in_exported_name_order(tmp_path):
-    body_pos_w, body_quat_w, body_lin_vel_w, body_ang_vel_w, joint_pos, joint_vel = _write_motion(tmp_path)
+    body_pos_w, body_quat_w, body_lin_vel_w, body_ang_vel_w, joint_pos, joint_vel, object_contact = _write_motion(tmp_path)
     reference = MujocoMotionReference.from_motion_dir(
         tmp_path,
         body_names=["pelvis", "hand_link"],
@@ -80,6 +91,7 @@ def test_motion_reference_slices_future_frames_in_exported_name_order(tmp_path):
         reference.joint_vel[expected_indices][:, reference.joint_indices],
         torch.as_tensor(joint_vel[expected_indices][:, [1, 0]], dtype=torch.float32),
     )
+    assert torch.equal(reference.object_contact, torch.as_tensor(object_contact, dtype=torch.bool))
     assert torch.equal(fields.motion_t, torch.tensor([2]))
     assert torch.equal(fields.motion_len, torch.tensor([5]))
 

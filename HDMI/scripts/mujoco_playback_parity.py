@@ -43,6 +43,9 @@ KINEMATIC_REWARD_TERMS = {
     "object_pos_tracking",
     "object_ori_tracking",
     "object_joint_pos_tracking",
+    "eef_contact_exp",
+    "eef_contact_exp_max",
+    "eef_contact_all",
 }
 
 
@@ -55,6 +58,9 @@ def run_parity(
     object_body_name: str | None = None,
     object_joint_name: str | None = None,
     root_body_name: str | None = None,
+    contact_eef_body_names: Sequence[str] | None = None,
+    contact_target_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None = None,
+    contact_eef_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None = None,
     steps: Sequence[int] | None = None,
     num_envs: int = 1,
     reward_config: Mapping[str, Any] | None = None,
@@ -74,6 +80,8 @@ def run_parity(
         robot_name=robot_name,
         object_name=object_name,
         object_type=object_type,
+        object_body_name=object_body_name,
+        contact_eef_body_names=contact_eef_body_names,
         num_envs=num_envs,
     )
     reference = MujocoMotionReference.from_motion_dir(
@@ -92,6 +100,9 @@ def run_parity(
         object_name=object_name,
         object_body_name=object_body_name,
         object_joint_name=object_joint_name,
+        contact_eef_body_names=contact_eef_body_names,
+        contact_target_pos_offset=contact_target_pos_offset,
+        contact_eef_pos_offset=contact_eef_pos_offset,
     )
     summary = summarize_metrics(
         metrics,
@@ -185,6 +196,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     with contextlib.redirect_stdout(sys.stderr):
         task_cfg = _load_task_config_from_args(args)
         playback_inputs = _resolve_playback_inputs(args, task_cfg)
+        contact_inputs = _resolve_contact_inputs(args, task_cfg)
         reward_config = _load_reward_config_from_args(args, task_cfg)
         summary = run_parity(
             motion_dir=playback_inputs["motion_dir"],
@@ -194,6 +206,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             object_body_name=playback_inputs["object_body_name"],
             object_joint_name=playback_inputs["object_joint_name"],
             root_body_name=playback_inputs["root_body_name"],
+            contact_eef_body_names=contact_inputs["contact_eef_body_names"],
+            contact_target_pos_offset=contact_inputs["contact_target_pos_offset"],
+            contact_eef_pos_offset=contact_inputs["contact_eef_pos_offset"],
             steps=_parse_steps(args.steps),
             num_envs=args.num_envs,
             reward_config=reward_config,
@@ -356,6 +371,24 @@ def _resolve_playback_inputs(
         "object_body_name": args.object_body_name or command_cfg.get("object_body_name"),
         "object_joint_name": args.object_joint_name or command_cfg.get("object_joint_name"),
         "root_body_name": args.root_body_name or command_cfg.get("root_body_name"),
+    }
+
+
+def _resolve_contact_inputs(
+    args: argparse.Namespace,
+    task_cfg: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if task_cfg is None:
+        return {
+            "contact_eef_body_names": None,
+            "contact_target_pos_offset": None,
+            "contact_eef_pos_offset": None,
+        }
+    command_cfg = _task_command_config(task_cfg, args.task_yaml)
+    return {
+        "contact_eef_body_names": command_cfg.get("contact_eef_body_name"),
+        "contact_target_pos_offset": command_cfg.get("contact_target_pos_offset"),
+        "contact_eef_pos_offset": command_cfg.get("contact_eef_pos_offset"),
     }
 
 
@@ -735,6 +768,8 @@ def _build_scene(
     robot_name: str,
     object_name: str | None,
     object_type: str | None,
+    object_body_name: str | None,
+    contact_eef_body_names: Sequence[str] | None,
     num_envs: int,
 ):
     from active_adaptation.envs import mujoco as mujoco_env
@@ -750,7 +785,27 @@ def _build_scene(
             object_asset_name=object_name,
             object_type=object_type,
         )
+        if object_body_name is not None:
+            for eef_body_name in _contact_eef_body_name_list(contact_eef_body_names):
+                contact_sensor_name = f"{eef_body_name}_{object_name}_contact_forces"
+                setattr(
+                    SceneCfg,
+                    contact_sensor_name,
+                    mujoco_env.MJContactSensorCfg(
+                        target="robot",
+                        body_names=[eef_body_name],
+                        filter_body_names=[object_body_name],
+                    ),
+                )
     return mujoco_env.MJScene(SceneCfg(), num_envs=num_envs, launch_viewer=False)
+
+
+def _contact_eef_body_name_list(value: Sequence[str] | None) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        return [str(value)]
+    return [str(item) for item in value]
 
 
 if __name__ == "__main__":

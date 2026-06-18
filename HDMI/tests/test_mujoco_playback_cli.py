@@ -55,6 +55,7 @@ def _write_motion_dir(tmp_path):
         body_pos_w=body_pos_w,
         body_quat_w=body_quat_w,
         joint_pos=joint_pos,
+        object_contact=np.array([[True], [False]], dtype=np.bool_),
     )
     (tmp_path / "meta.json").write_text(
         json.dumps({"body_names": body_names, "joint_names": joint_names, "fps": 50.0})
@@ -316,6 +317,40 @@ reward:
     assert summary["envs"] == 1
     assert summary["reward_shape"] == [2, 1, 1]
     assert summary["q_l2_max"] < 1e-5
+
+
+def test_mujoco_playback_parity_cli_uses_task_yaml_contact_reward(tmp_path, capsys):
+    motion_dir = tmp_path / "data/motion/test_door"
+    object_body_name, object_joint_name = _write_motion_dir(motion_dir)
+    meta = json.loads((motion_dir / "meta.json").read_text())
+    eef_body_name = meta["body_names"][0]
+    task_yaml = tmp_path / "cfg/task/G1/hdmi/door.yaml"
+    task_yaml.parent.mkdir(parents=True)
+    task_yaml.write_text(
+        f"""
+command:
+  data_path: data/motion/test_door
+  root_body_name: {eef_body_name}
+  object_asset_name: door
+  object_body_name: {object_body_name}
+  object_joint_name: {object_joint_name}
+  contact_eef_body_name: [{eef_body_name}]
+  contact_target_pos_offset: [[0.0, 0.0, 0.0]]
+  contact_eef_pos_offset: [[0.0, 0.0, 0.0]]
+reward:
+  object_tracking:
+    eef_contact_exp: {{weight: 1.0, pos_sigma: 1.0, frc_sigma: 1.0, frc_thres: 0.0}}
+""".strip()
+    )
+    script = _load_cli_module()
+
+    exit_code = script.main(["--task-yaml", str(task_yaml), "--steps", "0,1"])
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["reward_shape"] == [2, 1, 1]
+    assert summary["reward_terms_used"] == ["object_tracking.eef_contact_exp"]
+    assert summary["reward_terms_skipped"] == []
 
 
 def test_mujoco_playback_parity_cli_reports_policy_action_summary(tmp_path, capsys):

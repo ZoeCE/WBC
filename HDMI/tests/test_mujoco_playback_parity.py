@@ -321,3 +321,79 @@ def test_kinematic_motion_playback_parity_writes_robot_and_object_reference_orde
         object_joint_name=door.joint_names[0],
         reward_cfg=reward_cfg,
     )
+
+    assert metrics.reward.shape == (2, 1, 2)
+    assert metrics.q_l2.max() < 1e-5
+
+
+def test_kinematic_motion_playback_parity_builds_contact_reward_from_motion_reference():
+    module = _mujoco_env_module()
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS.with_object("g1_29dof", object_asset_name="door")
+
+    scene = module.MJScene(SceneCfg(), num_envs=2, launch_viewer=False)
+    robot = scene["robot"]
+    door = scene["door"]
+
+    eef_body_name = robot.body_names[0]
+    object_body_name = door.body_names[0]
+    body_names = [eef_body_name, object_body_name]
+    joint_names = [robot.joint_names[0], door.joint_names[0]]
+    body_pos_w = torch.tensor(
+        [
+            [[0.0, 0.0, 0.80], [1.0, 0.0, 0.20]],
+            [[0.1, 0.0, 0.82], [1.2, 0.1, 0.25]],
+        ]
+    )
+    body_quat_w = torch.zeros(2, 2, 4)
+    body_quat_w[..., 0] = 1.0
+    joint_pos = torch.tensor(
+        [
+            [0.10, 0.40],
+            [0.30, 0.80],
+        ]
+    )
+    reference = MujocoMotionReference(
+        body_names=body_names,
+        joint_names=joint_names,
+        requested_body_names=body_names,
+        requested_joint_names=joint_names,
+        root_body_name=eef_body_name,
+        future_steps=torch.tensor([0]),
+        body_indices=torch.arange(len(body_names)),
+        joint_indices=torch.arange(len(joint_names)),
+        root_body_index=0,
+        body_pos_w=body_pos_w,
+        body_quat_w=body_quat_w,
+        joint_pos=joint_pos,
+        fps=50.0,
+        object_contact=torch.tensor([[True], [False]]),
+    )
+    reward_cfg = {
+        "object_tracking": {
+            "eef_contact_exp": {
+                "weight": 1.0,
+                "pos_sigma": 1.0,
+                "frc_sigma": 1.0,
+                "frc_thres": 0.0,
+            },
+        },
+    }
+
+    metrics = playback_parity.compute_kinematic_motion_playback_parity(
+        scene,
+        reference,
+        steps=[0, 1],
+        object_name="door",
+        object_body_name=object_body_name,
+        object_joint_name=door.joint_names[0],
+        reward_cfg=reward_cfg,
+        contact_eef_body_names=[eef_body_name],
+        contact_target_pos_offset=[[0.0, 0.0, 0.0]],
+        contact_eef_pos_offset=[[0.0, 0.0, 0.0]],
+    )
+
+    assert metrics.reward.shape == (2, 2, 1)
+    assert torch.isfinite(metrics.reward).all()

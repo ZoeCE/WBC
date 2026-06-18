@@ -203,6 +203,9 @@ def compute_kinematic_motion_playback_parity(
     object_name: str | None = None,
     object_body_name: str | None = None,
     object_joint_name: str | None = None,
+    contact_eef_body_names: Sequence[str] | None = None,
+    contact_target_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None = None,
+    contact_eef_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None = None,
 ) -> PlaybackParityMetrics:
     """Replay reference poses through MuJoCo kinematics and report per-step parity metrics."""
     robot = scene["robot"]
@@ -263,6 +266,7 @@ def compute_kinematic_motion_playback_parity(
         reward = None
         if reward_cfg is not None:
             reward_state = _build_kinematic_reward_state(
+                scene=scene,
                 robot=robot,
                 object_view=object_view,
                 reference=reference,
@@ -279,8 +283,12 @@ def compute_kinematic_motion_playback_parity(
                 ref_joint_pos=ref_joint_pos,
                 actual_joint_vel=actual_joint_vel,
                 ref_joint_vel=ref_joint_vel,
+                object_name=object_name,
                 object_body_name=object_body_name or object_name,
                 object_joint_name=object_joint_name,
+                contact_eef_body_names=contact_eef_body_names,
+                contact_target_pos_offset=contact_target_pos_offset,
+                contact_eef_pos_offset=contact_eef_pos_offset,
             )
             reward = compute_reward_from_spec(reward_cfg, reward_state)
             rewards.append(reward)
@@ -675,6 +683,7 @@ def _gather_scene_body_tensor(
 
 def _build_kinematic_reward_state(
     *,
+    scene: Any,
     robot: Any,
     object_view: Any | None,
     reference: Any,
@@ -691,8 +700,12 @@ def _build_kinematic_reward_state(
     ref_joint_pos: torch.Tensor,
     actual_joint_vel: torch.Tensor,
     ref_joint_vel: torch.Tensor,
+    object_name: str | None,
     object_body_name: str | None,
     object_joint_name: str | None,
+    contact_eef_body_names: Sequence[str] | None,
+    contact_target_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None,
+    contact_eef_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None,
 ) -> MujocoRewardState:
     ref_root_pos_w = _expand_reference_frame(reference.body_pos_w[step, reference.root_body_index], robot.num_instances)
     ref_root_quat_w = _expand_reference_frame(
@@ -706,6 +719,10 @@ def _build_kinematic_reward_state(
     ref_object_quat_w = None
     object_joint_pos = None
     ref_object_joint_pos = None
+    contact_eef_pos_w = None
+    contact_target_pos_w = None
+    eef_contact_forces_b = None
+    ref_object_contact = None
     if object_view is not None:
         object_body_index = 0
         if object_body_name is not None and object_body_name in object_view.body_names:
@@ -732,6 +749,28 @@ def _build_kinematic_reward_state(
             reference_joint_index = reference.requested_joint_names.index(resolved_joint_name)
             ref_object_joint_pos = ref_joint_pos[:, reference_joint_index]
 
+        if contact_eef_body_names:
+            (
+                contact_eef_pos_w,
+                contact_target_pos_w,
+                eef_contact_forces_b,
+                ref_object_contact,
+            ) = _build_contact_reward_tensors(
+                scene=scene,
+                robot=robot,
+                object_view=object_view,
+                object_name=object_name,
+                object_body_name=object_body_name,
+                object_body_index=object_body_index,
+                reference=reference,
+                step=step,
+                contact_eef_body_names=contact_eef_body_names,
+                contact_target_pos_offset=contact_target_pos_offset,
+                contact_eef_pos_offset=contact_eef_pos_offset,
+            )
+    elif contact_eef_body_names:
+        raise ValueError("object_name is required when contact EEF reward inputs are requested.")
+
     return MujocoRewardState(
         actual_body_pos_w=actual_body_pos_w,
         ref_body_pos_w=ref_body_pos_w,
@@ -755,7 +794,216 @@ def _build_kinematic_reward_state(
         ref_object_quat_w=ref_object_quat_w,
         object_joint_pos=object_joint_pos,
         ref_object_joint_pos=ref_object_joint_pos,
+        contact_eef_pos_w=contact_eef_pos_w,
+        contact_target_pos_w=contact_target_pos_w,
+        eef_contact_forces_b=eef_contact_forces_b,
+        ref_object_contact=ref_object_contact,
     )
+
+
+def _build_contact_reward_tensors(
+    *,
+    scene: Any,
+    robot: Any,
+    object_view: Any,
+    object_name: str | None,
+    object_body_name: str | None,
+    object_body_index: int,
+    reference: Any,
+    step: int,
+    contact_eef_body_names: Sequence[str],
+    contact_target_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None,
+    contact_eef_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    eef_body_names = _as_string_list(contact_eef_body_names, "contact_eef_body_names")
+    if not eef_body_names:
+        raise ValueError("contact_eef_body_names must contain at least one body name.")
+
+    eef_body_indices = [
+        _resolve_single_index(robot, "find_bodies", eef_body_name, "contact EEF body")
+        for eef_body_name in eef_body_names
+    ]
+    dtype = object_view.data.body_link_pos_w.dtype
+    device = object_view.data.body_link_pos_w.device
+    num_envs = robot.num_instances
+    num_eefs = len(eef_body_names)
+
+    target_offsets = _contact_offsets(
+        contact_target_pos_offset,
+        num_eefs=num_eefs,
+        dtype=dtype,
+        device=device,
+        label="contact_target_pos_offset",
+    )
+    eef_offsets = _contact_offsets(
+        contact_eef_pos_offset,
+        num_eefs=num_eefs,
+        dtype=dtype,
+        device=device,
+        label="contact_eef_pos_offset",
+    )
+
+    object_pos_w = object_view.data.body_link_pos_w[:, object_body_index]
+    object_quat_w = object_view.data.body_link_quat_w[:, object_body_index]
+    contact_target_pos_w = object_pos_w[:, None, :] + _quat_rotate(
+        object_quat_w[:, None, :],
+        target_offsets.unsqueeze(0).expand(num_envs, -1, -1),
+    )
+
+    eef_pos_w = robot.data.body_link_pos_w[:, eef_body_indices]
+    eef_quat_w = robot.data.body_link_quat_w[:, eef_body_indices]
+    contact_eef_pos_w = eef_pos_w + _quat_rotate(
+        eef_quat_w,
+        eef_offsets.unsqueeze(0).expand(num_envs, -1, -1),
+    )
+
+    eef_contact_forces_w = _contact_forces_w(
+        scene=scene,
+        eef_body_names=eef_body_names,
+        object_name=object_name,
+        object_view=object_view,
+        dtype=dtype,
+        device=device,
+        num_envs=num_envs,
+    )
+    eef_contact_forces_b = _quat_rotate_inverse(object_quat_w[:, None, :], eef_contact_forces_w)
+    ref_object_contact = _reference_object_contact(
+        reference=reference,
+        step=step,
+        num_envs=num_envs,
+        num_eefs=num_eefs,
+        device=device,
+    )
+    return contact_eef_pos_w, contact_target_pos_w, eef_contact_forces_b, ref_object_contact
+
+
+def _as_string_list(value: Sequence[str], label: str) -> list[str]:
+    if isinstance(value, (str, bytes)):
+        return [str(value)]
+    try:
+        return [str(item) for item in value]
+    except TypeError as exc:
+        raise ValueError(f"{label} must be a sequence of names.") from exc
+
+
+def _contact_offsets(
+    value: Sequence[Sequence[float]] | torch.Tensor | None,
+    *,
+    num_eefs: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    label: str,
+) -> torch.Tensor:
+    if value is None:
+        return torch.zeros(num_eefs, 3, dtype=dtype, device=device)
+    offsets = torch.as_tensor(value, dtype=dtype, device=device)
+    if offsets.ndim == 1:
+        offsets = offsets.unsqueeze(0)
+    if offsets.ndim != 2 or offsets.shape[-1] != 3:
+        raise ValueError(f"{label} must have shape (num_eefs, 3), got {tuple(offsets.shape)}.")
+    if offsets.shape[0] == 1 and num_eefs > 1:
+        offsets = offsets.expand(num_eefs, -1)
+    if offsets.shape[0] != num_eefs:
+        raise ValueError(f"{label} has {offsets.shape[0]} rows, but {num_eefs} contact EEFs were configured.")
+    return offsets
+
+
+def _contact_forces_w(
+    *,
+    scene: Any,
+    eef_body_names: Sequence[str],
+    object_name: str | None,
+    object_view: Any,
+    dtype: torch.dtype,
+    device: torch.device,
+    num_envs: int,
+) -> torch.Tensor:
+    forces_w = torch.zeros(num_envs, len(eef_body_names), 3, dtype=dtype, device=device)
+    sensors = getattr(scene, "sensors", {})
+    if not sensors:
+        return forces_w
+
+    for eef_index, eef_body_name in enumerate(eef_body_names):
+        sensor = _contact_sensor_for_eef(
+            sensors=sensors,
+            eef_body_name=eef_body_name,
+            object_name=object_name,
+            object_view=object_view,
+        )
+        if sensor is None:
+            continue
+        sensor_body_index = _sensor_body_index(sensor, eef_body_name)
+        force_matrix_w = sensor.data.force_matrix_w
+        if force_matrix_w.shape[2] == 0:
+            continue
+        forces_w[:, eef_index] = force_matrix_w[:, sensor_body_index, 0].to(dtype=dtype, device=device)
+    return forces_w
+
+
+def _contact_sensor_for_eef(
+    *,
+    sensors: Mapping[str, Any],
+    eef_body_name: str,
+    object_name: str | None,
+    object_view: Any,
+) -> Any | None:
+    for sensor_name in _contact_sensor_names(eef_body_name, object_name, object_view):
+        sensor = sensors.get(sensor_name)
+        if sensor is not None:
+            return sensor
+    return None
+
+
+def _contact_sensor_names(eef_body_name: str, object_name: str | None, object_view: Any) -> list[str]:
+    object_names = []
+    if object_name is not None:
+        object_names.append(object_name)
+    spec = getattr(object_view, "spec", None)
+    spec_asset_name = getattr(spec, "asset_name", None)
+    if spec_asset_name is not None:
+        object_names.append(str(spec_asset_name))
+    return [f"{eef_body_name}_{name}_contact_forces" for name in dict.fromkeys(object_names)]
+
+
+def _sensor_body_index(sensor: Any, eef_body_name: str) -> int:
+    indices, _ = sensor.find_bodies([eef_body_name], preserve_order=True)
+    if len(indices) != 1:
+        raise ValueError(f"Expected one contact sensor body for {eef_body_name!r}, got {len(indices)}.")
+    return indices[0]
+
+
+def _reference_object_contact(
+    *,
+    reference: Any,
+    step: int,
+    num_envs: int,
+    num_eefs: int,
+    device: torch.device,
+) -> torch.Tensor:
+    object_contact = getattr(reference, "object_contact", None)
+    if object_contact is None:
+        raise ValueError("reference.object_contact is required for contact reward parity.")
+    contact = object_contact[step].to(dtype=torch.bool, device=device).reshape(-1)
+    if contact.numel() == 1 and num_eefs > 1:
+        contact = contact.expand(num_eefs)
+    if contact.numel() != num_eefs:
+        raise ValueError(
+            f"reference.object_contact step {step} has {contact.numel()} values, "
+            f"but {num_eefs} contact EEFs were configured."
+        )
+    return contact.unsqueeze(0).expand(num_envs, -1)
+
+
+def _quat_rotate(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    quat = quat.expand(*vec.shape[:-1], 4)
+    xyz = quat[..., 1:]
+    t = torch.linalg.cross(xyz, vec, dim=-1) * 2.0
+    return vec + quat[..., 0:1] * t + torch.linalg.cross(xyz, t, dim=-1)
+
+
+def _quat_rotate_inverse(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    quat_inv = torch.cat([quat[..., 0:1], -quat[..., 1:]], dim=-1)
+    return _quat_rotate(quat_inv, vec)
 
 
 def _reference_to_asset_joint_pairs(

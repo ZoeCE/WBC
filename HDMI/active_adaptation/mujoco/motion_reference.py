@@ -35,6 +35,7 @@ class MujocoMotionReference:
     body_lin_vel_w: torch.Tensor | None = None
     body_ang_vel_w: torch.Tensor | None = None
     joint_vel: torch.Tensor | None = None
+    object_contact: torch.Tensor | None = None
 
     @classmethod
     def from_motion_dir(
@@ -66,6 +67,7 @@ class MujocoMotionReference:
         body_lin_vel_w = _motion_tensor_or_zeros(motion, "body_lin_vel_w", body_pos_w)
         body_ang_vel_w = _motion_tensor_or_zeros(motion, "body_ang_vel_w", body_pos_w)
         joint_vel = _motion_tensor_or_zeros(motion, "joint_vel", joint_pos)
+        object_contact = _motion_bool_tensor_or_none(motion, "object_contact")
 
         return cls(
             body_names=available_body_names,
@@ -84,6 +86,7 @@ class MujocoMotionReference:
             body_lin_vel_w=body_lin_vel_w,
             body_ang_vel_w=body_ang_vel_w,
             joint_vel=joint_vel,
+            object_contact=object_contact,
         )
 
     @property
@@ -125,3 +128,9 @@ def _motion_tensor_or_zeros(motion: np.lib.npyio.NpzFile, key: str, like: torch.
     if key in motion:
         return torch.as_tensor(motion[key], dtype=torch.float32)
     return torch.zeros_like(like)
+
+
+def _motion_bool_tensor_or_none(motion: np.lib.npyio.NpzFile, key: str) -> torch.Tensor | None:
+    if key not in motion:
+        return None
+    return torch.as_tensor(motion[key], dtype=torch.bool)
