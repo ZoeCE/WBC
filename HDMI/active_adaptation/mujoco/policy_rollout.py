@@ -9,6 +9,8 @@ from .policy import MujocoPolicyAction, MujocoPolicyBundle
 from . import reward_parity
 from .playback_parity import compute_playback_parity
 
+_OBJECT_POSE_OBS_KEYS = ("object_xy_b", "object_heading_b", "object_pos_b", "object_ori_b")
+
 
 @dataclass(frozen=True)
 class MujocoPolicyRolloutMetrics:
@@ -165,13 +167,13 @@ def _policy_state_from_scene(
 
 
 def _policy_object_state_from_scene(scene: Any, policy_bundle: MujocoPolicyBundle) -> dict[str, torch.Tensor]:
-    object_name = _first_policy_observation_object_name(policy_bundle, ("object_xy_b", "object_heading_b"))
+    object_name = _first_policy_observation_object_name(policy_bundle, _OBJECT_POSE_OBS_KEYS)
     contact_cfg = _first_policy_observation_cfg(policy_bundle, "ref_contact_pos_b")
     if contact_cfg is not None and object_name is None and contact_cfg.get("object_name") is not None:
         object_name = str(contact_cfg["object_name"])
 
     if object_name is None:
-        if _uses_policy_observation(policy_bundle, ("object_xy_b", "object_heading_b", "ref_contact_pos_b")):
+        if _uses_policy_observation(policy_bundle, (*_OBJECT_POSE_OBS_KEYS, "ref_contact_pos_b")):
             object_name = _default_scene_object_body_name(scene)
         else:
             return {}

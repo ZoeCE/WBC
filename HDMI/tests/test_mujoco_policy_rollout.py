@@ -91,6 +91,37 @@ def _write_object_policy_bundle(tmp_path: Path, joint_name: str, object_body_nam
     return MujocoPolicyBundle.load(policy_path)
 
 
+def _write_full_object_pose_policy_bundle(
+    tmp_path: Path,
+    joint_name: str,
+    object_body_name: str,
+) -> MujocoPolicyBundle:
+    module = TensorDictModule(
+        torch.nn.Linear(12, 1, bias=False),
+        in_keys=["object"],
+        out_keys=["action"],
+    )
+    module.module.weight.data.zero_()
+    policy_path = tmp_path / "policy-object-pose-final.pt"
+    torch.save(module, policy_path)
+    (tmp_path / "policy-object-pose-final.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "observation": {
+                    "object": {
+                        "object_pos_b": {"object_name": object_body_name},
+                        "object_ori_b": {"object_name": object_body_name},
+                    },
+                },
+                "action_scale": 0.5,
+                "policy_joint_names": [joint_name],
+                "default_joint_pos": {joint_name: 0.0},
+            }
+        )
+    )
+    return MujocoPolicyBundle.load(policy_path)
+
+
 def test_policy_rollout_steps_mujoco_scene_and_reports_parity(tmp_path):
     module = importlib.import_module("active_adaptation.envs.mujoco")
     from active_adaptation.assets_mjcf import ROBOTS
@@ -167,4 +198,40 @@ def test_policy_rollout_fills_object_observations_from_mujoco_scene(tmp_path):
 
     assert metrics.actions.shape == (2, 1, 1)
     assert metrics.joint_position_targets.shape == (2, 1, 1)
+    assert torch.isfinite(metrics.actions).all()
+
+
+def test_policy_rollout_fills_full_object_pose_observations_from_mujoco_scene(tmp_path):
+    module = importlib.import_module("active_adaptation.envs.mujoco")
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS.with_object("g1_29dof", object_asset_name="door")
+
+    scene = module.MJScene(SceneCfg(), num_envs=1, launch_viewer=False)
+    robot = scene["robot"]
+    door = scene["door"]
+    object_body_name = door.body_names[0]
+    body_names = [robot.body_names[0], object_body_name]
+    joint_name = robot.joint_names[0]
+    motion_dir = tmp_path / "motion-object-pose"
+    _write_motion_dir(motion_dir, body_names, [joint_name])
+    reference = MujocoMotionReference.from_motion_dir(
+        motion_dir=motion_dir,
+        body_names=body_names,
+        joint_names=[joint_name],
+        root_body_name=robot.body_names[0],
+        future_steps=[0],
+    )
+    policy_bundle = _write_full_object_pose_policy_bundle(tmp_path, joint_name, object_body_name)
+
+    metrics = run_mujoco_policy_rollout(
+        scene=scene,
+        policy_bundle=policy_bundle,
+        reference=reference,
+        steps=[0, 1],
+        decimation=1,
+    )
+
+    assert metrics.actions.shape == (2, 1, 1)
     assert torch.isfinite(metrics.actions).all()

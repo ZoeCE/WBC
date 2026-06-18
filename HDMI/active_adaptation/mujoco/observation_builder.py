@@ -129,6 +129,10 @@ class MujocoObservationBuilder:
             return _object_xy_b(state)
         if obs_key == "object_heading_b":
             return _object_heading_b(state)
+        if obs_key == "object_pos_b":
+            return _object_pos_b(state)
+        if obs_key == "object_ori_b":
+            return _object_ori_b(state)
         if obs_key == "prev_actions":
             return self._prev_actions(params, state)
         if obs_key == "applied_action":
@@ -262,6 +266,24 @@ def _object_heading_b(state: MujocoPolicyState) -> torch.Tensor:
     return torch.stack((torch.cos(object_yaw_b), torch.sin(object_yaw_b)), dim=-1)
 
 
+def _object_pos_b(state: MujocoPolicyState) -> torch.Tensor:
+    object_pos_w = _required_tensor(state, "object_pos_w")
+    robot_root_pos_w = _required_tensor(state, "robot_root_pos_w")
+    robot_root_quat_w = _required_tensor(state, "robot_root_quat_w")
+    return _quat_rotate_inverse(robot_root_quat_w, object_pos_w - robot_root_pos_w)
+
+
+def _object_ori_b(state: MujocoPolicyState) -> torch.Tensor:
+    object_quat_w = _required_tensor(state, "object_quat_w")
+    robot_root_quat_w = _required_tensor(state, "robot_root_quat_w")
+    object_quat_b = _quat_mul(
+        _quat_conjugate(robot_root_quat_w),
+        object_quat_w,
+    )
+    object_ori_b = _matrix_from_quat(object_quat_b)
+    return object_ori_b.reshape(object_ori_b.shape[0], -1)
+
+
 def _ref_motion_phase(state: MujocoPolicyState) -> torch.Tensor:
     motion_t = _required_tensor(state, "motion_t")
     motion_len = _required_tensor(state, "motion_len")
@@ -293,3 +315,51 @@ def _quat_rotate_inverse(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
     xyz = quat[..., 1:]
     t = torch.linalg.cross(xyz, vec, dim=-1) * 2
     return vec - quat[..., 0:1] * t + torch.linalg.cross(xyz, t, dim=-1)
+
+
+def _quat_conjugate(quat: torch.Tensor) -> torch.Tensor:
+    return torch.cat((quat[..., :1], -quat[..., 1:]), dim=-1)
+
+
+def _quat_mul(lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+    w1, x1, y1, z1 = torch.unbind(lhs, dim=-1)
+    w2, x2, y2, z2 = torch.unbind(rhs, dim=-1)
+    return torch.stack(
+        (
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ),
+        dim=-1,
+    )
+
+
+def _matrix_from_quat(quat: torch.Tensor) -> torch.Tensor:
+    qw, qx, qy, qz = torch.unbind(quat, dim=-1)
+    two = 2.0
+    row0 = torch.stack(
+        (
+            1 - two * (qy * qy + qz * qz),
+            two * (qx * qy - qz * qw),
+            two * (qx * qz + qy * qw),
+        ),
+        dim=-1,
+    )
+    row1 = torch.stack(
+        (
+            two * (qx * qy + qz * qw),
+            1 - two * (qx * qx + qz * qz),
+            two * (qy * qz - qx * qw),
+        ),
+        dim=-1,
+    )
+    row2 = torch.stack(
+        (
+            two * (qx * qz - qy * qw),
+            two * (qy * qz + qx * qw),
+            1 - two * (qx * qx + qy * qy),
+        ),
+        dim=-1,
+    )
+    return torch.stack((row0, row1, row2), dim=-2)

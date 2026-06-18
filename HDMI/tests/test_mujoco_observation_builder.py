@@ -281,3 +281,31 @@ def test_object_group_builds_object_pose_in_robot_root_frame():
     expected = torch.tensor([[1.0, 0.0, 0.0, 1.0]])
     assert torch.allclose(obs, expected, atol=1e-6)
     assert builder.group_dim("object") == 4
+
+
+def test_object_group_builds_full_object_pose_in_robot_root_frame():
+    cfg = {
+        "object": {
+            "object_pos_b": {},
+            "object_ori_b": {},
+        }
+    }
+    builder = MujocoObservationBuilder(cfg, policy_joint_names=["j0"])
+    sqrt_half = 2 ** -0.5
+    state = _state(
+        root=[[0.0, 0.0, 0.0]],
+        gravity=[[0.0, 0.0, -1.0]],
+        joint=[[0.0]],
+        robot_root_pos_w=[[1.0, 1.0, 0.0]],
+        robot_root_quat_w=[[sqrt_half, 0.0, 0.0, sqrt_half]],
+        object_pos_w=[[1.0, 2.0, 0.5]],
+        object_quat_w=[[sqrt_half, 0.0, 0.0, sqrt_half]],
+    )
+
+    obs = builder.build_group("object", state)
+
+    expected_pos_b = torch.tensor([[1.0, 0.0, 0.5]])
+    expected_ori_b = torch.eye(3).reshape(1, -1)
+    expected = torch.cat([expected_pos_b, expected_ori_b], dim=-1)
+    assert torch.allclose(obs, expected, atol=1e-6)
+    assert builder.group_dim("object") == 12
