@@ -19,6 +19,10 @@ class MujocoPolicyState:
     ref_joint_pos_future: torch.Tensor | None = None
     motion_t: torch.Tensor | None = None
     motion_len: torch.Tensor | None = None
+    robot_root_pos_w: torch.Tensor | None = None
+    robot_root_quat_w: torch.Tensor | None = None
+    contact_target_pos_w: torch.Tensor | None = None
+    contact_eef_pos_w: torch.Tensor | None = None
 
 
 class MujocoObservationBuilder:
@@ -108,6 +112,10 @@ class MujocoObservationBuilder:
             return ref_joint_pos.reshape(ref_joint_pos.shape[0], -1)
         if obs_key == "ref_motion_phase":
             return _ref_motion_phase(state)
+        if obs_key == "ref_contact_pos_b":
+            return _ref_contact_pos_b(state, yaw_only=bool(params.get("yaw_only", False)))
+        if obs_key == "diff_contact_pos_b":
+            return _diff_contact_pos_b(state)
         if obs_key == "prev_actions":
             return self._prev_actions(params, state)
         if obs_key == "applied_action":
@@ -172,6 +180,29 @@ def _ref_body_pos_future_local(state: MujocoPolicyState) -> torch.Tensor:
     ref_root_quat_w = _yaw_quat(ref_root_quat_w)
     ref_body_pos_future_local = _quat_rotate_inverse(ref_root_quat_w, ref_body_pos_future_w - ref_root_pos_w)
     return ref_body_pos_future_local.reshape(ref_body_pos_future_local.shape[0], -1)
+
+
+def _ref_contact_pos_b(state: MujocoPolicyState, yaw_only: bool = False) -> torch.Tensor:
+    contact_target_pos_w = _required_tensor(state, "contact_target_pos_w")
+    robot_root_pos_w = _required_tensor(state, "robot_root_pos_w")[:, None, :]
+    robot_root_quat_w = _required_tensor(state, "robot_root_quat_w")[:, None, :]
+    if yaw_only:
+        robot_root_quat_w = _yaw_quat(robot_root_quat_w)
+    ref_contact_pos_b = _quat_rotate_inverse(robot_root_quat_w, contact_target_pos_w - robot_root_pos_w)
+    return ref_contact_pos_b.reshape(ref_contact_pos_b.shape[0], -1)
+
+
+def _diff_contact_pos_b(state: MujocoPolicyState) -> torch.Tensor:
+    contact_target_pos_w = _required_tensor(state, "contact_target_pos_w")
+    contact_eef_pos_w = _required_tensor(state, "contact_eef_pos_w")
+    robot_root_quat_w = _required_tensor(state, "robot_root_quat_w")[:, None, :]
+    if contact_target_pos_w.shape != contact_eef_pos_w.shape:
+        raise ValueError(
+            "contact_target_pos_w shape "
+            f"{tuple(contact_target_pos_w.shape)} != contact_eef_pos_w shape {tuple(contact_eef_pos_w.shape)}."
+        )
+    diff_contact_pos_b = _quat_rotate_inverse(robot_root_quat_w, contact_target_pos_w - contact_eef_pos_w)
+    return diff_contact_pos_b.reshape(diff_contact_pos_b.shape[0], -1)
 
 
 def _ref_motion_phase(state: MujocoPolicyState) -> torch.Tensor:

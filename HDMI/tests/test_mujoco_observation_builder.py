@@ -187,3 +187,45 @@ def test_policy_builder_rejects_unsupported_observation_key():
 
     with pytest.raises(NotImplementedError, match="unknown_mujoco_observation"):
         builder.build_group("policy", state)
+
+
+def test_command_group_builds_contact_observations_in_robot_root_frame():
+    cfg = {
+        "command": {
+            "ref_contact_pos_b": {"yaw_only": True},
+            "diff_contact_pos_b": {},
+        }
+    }
+    builder = MujocoObservationBuilder(cfg, policy_joint_names=["j0"])
+    sqrt_half = 2 ** -0.5
+    state = _state(
+        root=[[0.0, 0.0, 0.0]],
+        gravity=[[0.0, 0.0, -1.0]],
+        joint=[[0.0]],
+        robot_root_pos_w=[[1.0, 1.0, 0.0]],
+        robot_root_quat_w=[[sqrt_half, 0.0, 0.0, sqrt_half]],
+        contact_target_pos_w=[
+            [
+                [1.0, 2.0, 0.0],
+                [2.0, 1.0, 1.0],
+            ]
+        ],
+        contact_eef_pos_w=[
+            [
+                [1.0, 1.5, 0.0],
+                [1.0, 1.0, 1.0],
+            ]
+        ],
+    )
+
+    obs = builder.build_group("command", state)
+
+    expected = torch.tensor(
+        [[
+            1.0, 0.0, 0.0,
+            0.0, -1.0, 1.0,
+            0.5, 0.0, 0.0,
+            0.0, -1.0, 0.0,
+        ]]
+    )
+    assert torch.allclose(obs, expected, atol=1e-6)
