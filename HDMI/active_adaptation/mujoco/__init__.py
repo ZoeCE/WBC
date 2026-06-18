@@ -8,7 +8,9 @@ from .motion_reference import MujocoMotionReference, MujocoReferenceObservationF
 from .observation_builder import MujocoObservationBuilder, MujocoPolicyState
 from .playback_parity import PlaybackParityMetrics, compute_playback_parity
 from .reward_parity import (
+    eef_contact_all,
     eef_contact_exp,
+    eef_contact_exp_max,
     joint_position_tracking_product,
     keypoint_position_tracking_product,
     object_joint_position_tracking,
@@ -26,7 +28,9 @@ __all__ = [
     "MujocoPolicyState",
     "MujocoReferenceObservationFields",
     "PlaybackParityMetrics",
+    "eef_contact_all",
     "eef_contact_exp",
+    "eef_contact_exp_max",
     "joint_position_tracking_product",
     "keypoint_position_tracking_product",
     "object_joint_position_tracking",

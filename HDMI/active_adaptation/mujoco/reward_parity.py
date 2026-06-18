@@ -141,6 +141,60 @@ def eef_contact_exp(
     return reward.mean(dim=-1).unsqueeze(-1)
 
 
+def eef_contact_exp_max(
+    contact_eef_pos_w: torch.Tensor,
+    contact_target_pos_w: torch.Tensor,
+    eef_contact_forces_b: torch.Tensor,
+    ref_object_contact: torch.Tensor,
+    pos_sigma: float = 0.1,
+    pos_tolerance: float = 0.0,
+    frc_sigma: float = 10.0,
+    frc_thres: float | Sequence[float] | torch.Tensor = 2.0,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI eef_contact_exp_max rewards."""
+    _require_contact_reward_shapes(
+        contact_eef_pos_w=contact_eef_pos_w,
+        contact_target_pos_w=contact_target_pos_w,
+        eef_contact_forces_b=eef_contact_forces_b,
+        ref_object_contact=ref_object_contact,
+    )
+    if pos_sigma <= 0:
+        raise ValueError(f"pos_sigma must be positive, got {pos_sigma}.")
+    if frc_sigma <= 0:
+        raise ValueError(f"frc_sigma must be positive, got {frc_sigma}.")
+
+    eef_pos_error = ((contact_eef_pos_w - contact_target_pos_w).norm(dim=-1) - pos_tolerance).clamp_min(0.0)
+    contact_frc = _contact_force_penalty(eef_contact_forces_b, frc_thres)
+    active_reward = torch.exp(-eef_pos_error / pos_sigma) * torch.exp(contact_frc / frc_sigma)
+    reward = active_reward.max(dim=-1).values * ref_object_contact.any(dim=-1).to(dtype=active_reward.dtype)
+    return reward.unsqueeze(-1)
+
+
+def eef_contact_all(
+    contact_eef_pos_w: torch.Tensor,
+    contact_target_pos_w: torch.Tensor,
+    eef_contact_forces_b: torch.Tensor,
+    ref_object_contact: torch.Tensor,
+    pos_thres: float = 0.1,
+    frc_thres: float | Sequence[float] | torch.Tensor = 2.0,
+    gain: float = 1.0,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI eef_contact_all rewards."""
+    _require_contact_reward_shapes(
+        contact_eef_pos_w=contact_eef_pos_w,
+        contact_target_pos_w=contact_target_pos_w,
+        eef_contact_forces_b=eef_contact_forces_b,
+        ref_object_contact=ref_object_contact,
+    )
+
+    contact_pos = (contact_eef_pos_w - contact_target_pos_w).norm(dim=-1) < pos_thres
+    contact_frc = _contact_force_mask(eef_contact_forces_b, frc_thres)
+    active_reward = (contact_pos & contact_frc).to(dtype=contact_eef_pos_w.dtype)
+    contact_mask = ref_object_contact.to(dtype=active_reward.dtype)
+    reward = active_reward * contact_mask * gain + 1 - contact_mask
+    return reward.mean(dim=-1).unsqueeze(-1)
+
+
 def _body_pos_in_yaw_local_frame(
     body_pos_w: torch.Tensor,
     root_pos_w: torch.Tensor,
@@ -170,6 +224,35 @@ def _contact_force_penalty(
     if threshold.shape != (3,):
         raise ValueError(f"vector frc_thres must have shape (3,), got {tuple(threshold.shape)}.")
     return (eef_contact_forces_b.abs() - threshold).clamp_max(0.0).mean(dim=-1)
+
+
+def _contact_force_mask(
+    eef_contact_forces_b: torch.Tensor,
+    frc_thres: float | Sequence[float] | torch.Tensor,
+) -> torch.Tensor:
+    if isinstance(frc_thres, (float, int)):
+        return eef_contact_forces_b.norm(dim=-1) >= float(frc_thres)
+
+    threshold = torch.as_tensor(frc_thres, dtype=eef_contact_forces_b.dtype, device=eef_contact_forces_b.device)
+    if threshold.shape != (3,):
+        raise ValueError(f"vector frc_thres must have shape (3,), got {tuple(threshold.shape)}.")
+    return (eef_contact_forces_b.abs() >= threshold).all(dim=-1)
+
+
+def _require_contact_reward_shapes(
+    contact_eef_pos_w: torch.Tensor,
+    contact_target_pos_w: torch.Tensor,
+    eef_contact_forces_b: torch.Tensor,
+    ref_object_contact: torch.Tensor,
+) -> None:
+    _require_same_shape("contact_eef_pos_w", contact_eef_pos_w, "contact_target_pos_w", contact_target_pos_w)
+    _require_same_shape("contact_eef_pos_w", contact_eef_pos_w, "eef_contact_forces_b", eef_contact_forces_b)
+    _require_last_dim("contact_eef_pos_w", contact_eef_pos_w, 3)
+    if ref_object_contact.shape != contact_eef_pos_w.shape[:-1]:
+        raise ValueError(
+            "ref_object_contact shape "
+            f"{tuple(ref_object_contact.shape)} != contact tensors env/eef shape {tuple(contact_eef_pos_w.shape[:-1])}."
+        )
 
 
 def _tolerance_tensor(

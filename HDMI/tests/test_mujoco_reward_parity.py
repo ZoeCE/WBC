@@ -164,3 +164,80 @@ def test_object_joint_position_tracking_matches_hdmi_formula():
     joint_pos_error = (ref_object_joint_pos - object_joint_pos).abs()
     expected = torch.exp(-joint_pos_error / 0.2).unsqueeze(1)
     assert torch.allclose(reward, expected)
+
+
+def test_eef_contact_exp_max_matches_hdmi_contact_reward_formula():
+    contact_eef_pos_w = torch.tensor(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+        ]
+    )
+    contact_target_pos_w = torch.tensor(
+        [
+            [[0.2, 0.0, 0.0], [1.8, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.0, 2.4, 0.0]],
+        ]
+    )
+    eef_contact_forces_b = torch.tensor(
+        [
+            [[0.0, 0.0, 3.0], [0.0, 0.0, 1.0]],
+            [[0.0, 0.0, 0.0], [0.0, 4.0, 0.0]],
+        ]
+    )
+    ref_object_contact = torch.tensor([[True, False], [False, False]])
+
+    reward = reward_parity.eef_contact_exp_max(
+        contact_eef_pos_w=contact_eef_pos_w,
+        contact_target_pos_w=contact_target_pos_w,
+        eef_contact_forces_b=eef_contact_forces_b,
+        ref_object_contact=ref_object_contact,
+        pos_sigma=0.5,
+        pos_tolerance=0.1,
+        frc_sigma=2.0,
+        frc_thres=2.0,
+    )
+
+    pos_error = ((contact_eef_pos_w - contact_target_pos_w).norm(dim=-1) - 0.1).clamp_min(0.0)
+    contact_frc = (eef_contact_forces_b.norm(dim=-1) - 2.0).clamp_max(0.0)
+    active_reward = torch.exp(-pos_error / 0.5) * torch.exp(contact_frc / 2.0)
+    expected = active_reward.max(dim=-1).values * ref_object_contact.any(dim=-1).float()
+    assert torch.allclose(reward, expected.unsqueeze(-1))
+
+
+def test_eef_contact_all_matches_hdmi_contact_reward_formula():
+    contact_eef_pos_w = torch.tensor(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+        ]
+    )
+    contact_target_pos_w = torch.tensor(
+        [
+            [[0.05, 0.0, 0.0], [1.5, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.0, 2.08, 0.0]],
+        ]
+    )
+    eef_contact_forces_b = torch.tensor(
+        [
+            [[0.0, 0.0, 3.0], [0.0, 0.0, 1.0]],
+            [[0.0, 0.0, 0.0], [0.0, 4.0, 0.0]],
+        ]
+    )
+    ref_object_contact = torch.tensor([[True, True], [False, True]])
+
+    reward = reward_parity.eef_contact_all(
+        contact_eef_pos_w=contact_eef_pos_w,
+        contact_target_pos_w=contact_target_pos_w,
+        eef_contact_forces_b=eef_contact_forces_b,
+        ref_object_contact=ref_object_contact,
+        pos_thres=0.1,
+        frc_thres=2.0,
+        gain=0.5,
+    )
+
+    contact_pos = (contact_eef_pos_w - contact_target_pos_w).norm(dim=-1) < 0.1
+    contact_frc = eef_contact_forces_b.norm(dim=-1) >= 2.0
+    active_reward = (contact_pos & contact_frc).float()
+    expected = (active_reward * ref_object_contact.float() * 0.5 + 1 - ref_object_contact.float()).mean(dim=-1)
+    assert torch.allclose(reward, expected.unsqueeze(-1))
