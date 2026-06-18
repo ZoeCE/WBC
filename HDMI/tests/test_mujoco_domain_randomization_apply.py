@@ -81,3 +81,36 @@ def test_mujoco_articulated_object_applies_joint_armature_and_custom_terms_per_e
     assert torch.isclose(torch.tensor(door.mj_models[0].dof_armature[dof_addr]), torch.tensor(0.01, dtype=torch.float64))
     assert torch.isclose(torch.tensor(door.mj_models[1].dof_armature[dof_addr]), torch.tensor(0.03, dtype=torch.float64))
     assert door._custom_friction.shape == (2,)
+    assert door._custom_damping.shape == (2,)
+
+
+def test_mujoco_articulated_object_applies_custom_friction_and_damping_torque():
+    module = _mujoco_env_module()
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS.with_object("g1_29dof", object_asset_name="door")
+
+    scene = module.MJScene(SceneCfg(), num_envs=2, launch_viewer=False)
+    door = scene.articulations["door"]
+
+    door.write_joint_state_to_sim(
+        torch.zeros(2, 1),
+        torch.tensor([[0.2], [-0.3]]),
+        joint_ids=[0],
+    )
+    door._custom_friction[:] = torch.tensor([0.5, 0.7])
+    door._custom_damping[:] = torch.tensor([2.0, 3.0])
+
+    scene.write_data_to_sim()
+    dof_addr = int(door.joint_qveladr_read[0])
+
+    applied = torch.tensor([
+        door.mj_datas[0].qfrc_applied[dof_addr],
+        door.mj_datas[1].qfrc_applied[dof_addr],
+    ])
+    expected = torch.tensor([
+        -0.5 - 0.2 * 2.0,
+        0.7 + 0.3 * 3.0,
+    ], dtype=applied.dtype)
+    assert torch.allclose(applied, expected)

@@ -862,6 +862,25 @@ class MJObjectView:
                 values = np.asarray([values])
             self.mj_models[env_id].dof_armature[dof_adrs] = values
 
+    def write_data_to_sim(self):
+        if not self.num_joints:
+            return
+
+        joint_vel = self.data.joint_vel
+        if joint_vel is None:
+            joint_vel = torch.stack([
+                torch.as_tensor(data.qvel[self.joint_qveladr_read].copy(), dtype=torch.float32)
+                for data in self.mj_datas
+            ])
+
+        joint_friction = -torch.sign(joint_vel) * (joint_vel.abs() > 0.01) * self._custom_friction[:, None]
+        joint_damping = -joint_vel * self._custom_damping[:, None]
+        torque = joint_friction + joint_damping
+        torque_np = torque.detach().cpu().numpy()
+
+        for env_id, data in enumerate(self.mj_datas):
+            data.qfrc_applied[self.joint_qveladr_read] = torque_np[env_id]
+
     def _find_root_free_joint(self):
         root_body_id = int(self.body_adrs_read[0])
         for joint_id in range(self.mj_model.njnt):
@@ -1052,6 +1071,8 @@ class MJScene:
     def write_data_to_sim(self):
         for articulation in self._sim_articulations:
             articulation.write_data_to_sim()
+        for object_view in self._object_views:
+            object_view.write_data_to_sim()
 
     def __getitem__(self, key: str):
         result = self.articulations.get(key)
