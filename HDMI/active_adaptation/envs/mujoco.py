@@ -250,7 +250,7 @@ class MJArticulation:
             ids, _, values = string_utils.resolve_matching_names_values(actuator_cfg["damping"], self.joint_names_isaac)
             joint_damping[ids] = torch.as_tensor(values)
 
-        diag_inertia = torch.as_tensor(self.mj_model.body_inertia[self.body_adrs], dtype=torch.float32)
+        diag_inertia = torch.as_tensor(self.mj_model.body_inertia[self.body_adrs_read], dtype=torch.float32)
         default_root_state = torch.tensor(
             [[*cfg.init_state["pos"], 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]],
             dtype=torch.float32,
@@ -259,7 +259,7 @@ class MJArticulation:
             default_joint_pos=default_joint_pos.expand(self.num_instances, -1).clone(),
             default_joint_vel=default_joint_vel.expand(self.num_instances, -1).clone(),
             default_root_state=default_root_state.expand(self.num_instances, -1).clone(),
-            default_mass=torch.as_tensor(self.mj_model.body_mass[self.body_adrs], dtype=torch.float32).expand(self.num_instances, -1).clone(),
+            default_mass=torch.as_tensor(self.mj_model.body_mass[self.body_adrs_read], dtype=torch.float32).expand(self.num_instances, -1).clone(),
             default_inertia=diag_inertia.expand(self.num_instances, -1, -1).clone(),
             joint_stiffness=joint_stiffness.expand(self.num_instances, -1).clone(),
             joint_damping=joint_damping.expand(self.num_instances, -1).clone(),

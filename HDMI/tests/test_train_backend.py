@@ -101,13 +101,13 @@ def test_mujoco_train_smoke_builds_env_policy_and_steps_once():
         aa.set_backend("isaac")
 
 
-def test_mujoco_train_script_runs_minimal_ppo_loop(tmp_path):
-    run_dir = tmp_path / "mujoco-train-smoke"
+def _run_train_script_smoke(tmp_path, task: str, run_name: str):
+    run_dir = tmp_path / run_name
     command = [
         sys.executable,
         str(ROOT / "scripts/train.py"),
         "backend=mujoco",
-        "task=G1/tracking/walk",
+        f"task={task}",
         "task.num_envs=1",
         "task.max_episode_length=4",
         "task.viewer.env_spacing=0",
@@ -133,8 +133,21 @@ def test_mujoco_train_script_runs_minimal_ppo_loop(tmp_path):
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        timeout=180,
+        timeout=240,
     )
+
+    return result
+
+
+def test_mujoco_train_script_runs_minimal_ppo_loop(tmp_path):
+    result = _run_train_script_smoke(tmp_path, "G1/tracking/walk", "mujoco-train-smoke")
+
+    assert result.returncode == 0, result.stdout[-4000:]
+    assert "Average inference time" in result.stdout
+
+
+def test_mujoco_object_train_script_runs_minimal_ppo_loop(tmp_path):
+    result = _run_train_script_smoke(tmp_path, "G1/hdmi/push_box", "mujoco-object-train-smoke")
 
     assert result.returncode == 0, result.stdout[-4000:]
     assert "Average inference time" in result.stdout

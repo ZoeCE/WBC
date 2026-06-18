@@ -38,7 +38,11 @@ def test_mj_scene_exposes_rigid_object_view_from_object_scene():
     assert "box" in scene
     assert "box" in scene.rigid_objects
     assert "box" not in scene.articulations
-    assert "box" not in scene["robot"].body_names
+    robot = scene["robot"]
+    assert "box" not in robot.body_names
+    assert robot.data.default_mass.shape == (2, robot.num_bodies)
+    assert robot.data.default_inertia.shape == (2, robot.num_bodies, 3)
+    assert robot.root_physx_view.get_masses().shape == robot.data.default_mass.shape
     assert scene["box"].body_names == ["box"]
     assert scene["box"].joint_names == []
     assert scene["box"].data.root_link_pos_w.shape == (2, 3)
