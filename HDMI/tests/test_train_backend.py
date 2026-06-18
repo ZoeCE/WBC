@@ -54,6 +54,16 @@ def _load_eval_module():
     return module
 
 
+def _load_render_module():
+    script_path = ROOT / "scripts/render.py"
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    spec = importlib.util.spec_from_file_location("render_script_for_backend_test", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_eval_run_module():
     script_path = ROOT / "scripts/eval_run.py"
     if str(ROOT) not in sys.path:
@@ -107,6 +117,11 @@ def test_eval_config_declares_backend_override_key():
     assert cfg["backend"] == "isaac"
 
 
+def test_render_config_declares_backend_override_key():
+    cfg = yaml.safe_load((ROOT / "cfg/render.yaml").read_text())
+    assert cfg["backend"] == "isaac"
+
+
 def test_mujoco_backend_sets_backend_without_launching_isaac_app():
     aa.set_backend("isaac")
     script = _load_train_module()
@@ -152,6 +167,20 @@ def test_play_mujoco_backend_sets_backend_without_launching_isaac_app():
 def test_eval_mujoco_backend_sets_backend_without_launching_isaac_app():
     aa.set_backend("isaac")
     script = _load_eval_module()
+    cfg = OmegaConf.create({"backend": "mujoco", "app": {"headless": True, "enable_cameras": False}})
+
+    try:
+        simulation_app = script._configure_backend_and_app(cfg)
+
+        assert simulation_app is None
+        assert aa.get_backend() == "mujoco"
+    finally:
+        aa.set_backend("isaac")
+
+
+def test_render_mujoco_backend_sets_backend_without_launching_isaac_app():
+    aa.set_backend("isaac")
+    script = _load_render_module()
     cfg = OmegaConf.create({"backend": "mujoco", "app": {"headless": True, "enable_cameras": False}})
 
     try:
