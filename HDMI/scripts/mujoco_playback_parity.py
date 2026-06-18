@@ -128,6 +128,9 @@ def run_parity(
             "object_body_name": object_body_name,
             "object_joint_name": object_joint_name,
             "root_body_name": root_body_name,
+            "contact_eef_body_names": _contact_summary_names(contact_eef_body_names),
+            "contact_target_pos_offset": _contact_summary_value(contact_target_pos_offset),
+            "contact_eef_pos_offset": _contact_summary_value(contact_eef_pos_offset),
         }
     )
     if policy_path is not None:
@@ -172,6 +175,20 @@ def run_parity(
             )
         )
     return summary
+
+
+def _contact_summary_names(value: Sequence[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    return _contact_eef_body_name_list(value)
+
+
+def _contact_summary_value(value: Sequence[Sequence[float]] | torch.Tensor | None) -> Any | None:
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    return value
 
 
 def summarize_metrics(

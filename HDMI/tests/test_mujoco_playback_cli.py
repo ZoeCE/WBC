@@ -451,6 +451,55 @@ reward:
     assert summary["reward_terms_skipped"] == []
 
 
+
+def test_mujoco_playback_parity_cli_rolls_out_task_yaml_contact_reward(tmp_path, capsys):
+    motion_dir = tmp_path / "data/motion/test_door"
+    object_body_name, object_joint_name = _write_motion_dir(motion_dir)
+    meta = json.loads((motion_dir / "meta.json").read_text())
+    eef_body_name = meta["body_names"][0]
+    joint_name = meta["joint_names"][0]
+    policy_path = _write_rollout_policy_bundle(tmp_path, joint_name)
+    task_yaml = tmp_path / "cfg/task/G1/hdmi/door.yaml"
+    task_yaml.parent.mkdir(parents=True)
+    task_yaml.write_text(
+        f"""
+command:
+  data_path: data/motion/test_door
+  root_body_name: {eef_body_name}
+  object_asset_name: door
+  object_body_name: {object_body_name}
+  object_joint_name: {object_joint_name}
+  contact_eef_body_name: [{eef_body_name}]
+  contact_target_pos_offset: [[0.0, 0.0, 0.0]]
+  contact_eef_pos_offset: [[0.0, 0.0, 0.0]]
+reward:
+  object_tracking:
+    eef_contact_exp: {{weight: 1.0, pos_sigma: 1.0, frc_sigma: 1.0, frc_thres: 0.0}}
+""".strip()
+    )
+    script = _load_cli_module()
+
+    exit_code = script.main(
+        [
+            "--task-yaml",
+            str(task_yaml),
+            "--policy-path",
+            str(policy_path),
+            "--policy-rollout",
+            "--steps",
+            "0,1",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["reward_terms_used"] == ["object_tracking.eef_contact_exp"]
+    assert summary["contact_eef_body_names"] == [eef_body_name]
+    assert summary["contact_target_pos_offset"] == [[0.0, 0.0, 0.0]]
+    assert summary["contact_eef_pos_offset"] == [[0.0, 0.0, 0.0]]
+    assert summary["policy_rollout_reward_shape"] == [2, 1, 1]
+    assert summary["policy_rollout_reward_min"] <= summary["policy_rollout_reward_max"]
+
 def test_mujoco_playback_parity_cli_uses_supported_loco_rewards(tmp_path, capsys):
     motion_dir = tmp_path / "data/motion/test_robot"
     root_body_name, joint_name = _write_robot_motion_dir(motion_dir)
