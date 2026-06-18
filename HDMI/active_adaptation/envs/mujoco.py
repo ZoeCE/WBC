@@ -135,8 +135,9 @@ class MJArticulation:
 
         self.cfg = cfg
         self.num_instances = int(num_envs)
-        self.mj_model = mujoco.MjModel.from_xml_path(cfg.mjcf_path)
-        self.mj_datas = [mujoco.MjData(self.mj_model) for _ in range(self.num_instances)]
+        self.mj_models = [mujoco.MjModel.from_xml_path(cfg.mjcf_path) for _ in range(self.num_instances)]
+        self.mj_model = self.mj_models[0]
+        self.mj_datas = [mujoco.MjData(model) for model in self.mj_models]
         self.mj_data = self.mj_datas[0]
         
         self.body_names_isaac = list(cfg.body_names_isaac)
@@ -260,8 +261,8 @@ class MJArticulation:
 
         self.timestamp = 0.
 
-        for data in self.mj_datas:
-            mujoco.mj_forward(self.mj_model, data)
+        for model, data in zip(self.mj_models, self.mj_datas, strict=True):
+            mujoco.mj_forward(model, data)
         self.update(0.0)
     
     @property
@@ -378,7 +379,7 @@ class MJArticulation:
                 joint_vel=self._data.default_joint_vel[env_id],
                 joint_ids=slice(None),
             )
-            mujoco.mj_forward(self.mj_model, data)
+            mujoco.mj_forward(self.mj_models[env_id], data)
         self.update(0.0)
 
     def write_root_link_pose_to_sim(self, root_pose: ArrayType, env_ids: ArrayType = None):
@@ -390,7 +391,7 @@ class MJArticulation:
             root_np = root_pose_t[row].detach().cpu().numpy()
             data.qpos[:3] = root_np[:3]
             data.qpos[3:7] = root_np[3:7]
-            mujoco.mj_forward(self.mj_model, data)
+            mujoco.mj_forward(self.mj_models[env_id], data)
         self.update(0.0)
 
     def write_root_com_velocity_to_sim(self, root_velocity: ArrayType, env_ids: ArrayType = None):
@@ -400,7 +401,7 @@ class MJArticulation:
         for row, env_id in enumerate(env_ids_t.tolist()):
             data = self.mj_datas[env_id]
             data.qvel[:6] = root_velocity_t[row].detach().cpu().numpy()
-            mujoco.mj_forward(self.mj_model, data)
+            mujoco.mj_forward(self.mj_models[env_id], data)
         self.update(0.0)
 
     def set_joint_position_target(self, target: ArrayType, joint_ids: ArrayType = None, env_ids: ArrayType = None):
@@ -471,7 +472,7 @@ class MJArticulation:
                 joint_vel=None if joint_vel_t is None else joint_vel_t[row],
                 joint_ids=joint_ids_n,
             )
-            mujoco.mj_forward(self.mj_model, data)
+            mujoco.mj_forward(self.mj_models[env_id], data)
         self.update(0.0)
 
     def _write_joint_state_to_data(self, data, joint_pos: torch.Tensor | None, joint_vel: torch.Tensor | None, joint_ids):
@@ -536,9 +537,103 @@ def _joint_pos_limits(model: mujoco.MjModel, joint_ids: Sequence[int]) -> torch.
     return limits
 
 
+class MJRootPhysxView:
+    def __init__(self, asset):
+        self.asset = asset
+        self.max_shapes = len(asset.geom_adrs)
+        self.geom_adrs = asset.geom_adrs
+        self._material_properties = self._read_material_properties()
+
+    def get_masses(self):
+        masses = [
+            torch.as_tensor(model.body_mass[self.asset.body_adrs_read].copy(), dtype=torch.float32)
+            for model in self.asset.mj_models
+        ]
+        return torch.stack(masses)
+
+    def set_masses(self, masses: ArrayType, indices: ArrayType):
+        indices_t = self._normalize_indices(indices)
+        masses_t = self._rows_for_indices(masses, indices_t, trailing_shape=(self.asset.num_bodies,))
+        for row, env_id in enumerate(indices_t.tolist()):
+            self.asset.mj_models[env_id].body_mass[self.asset.body_adrs_read] = masses_t[row].detach().cpu().numpy()
+        self.asset.data.default_mass[indices_t] = masses_t
+
+    def get_inertias(self):
+        inertias = [
+            torch.as_tensor(model.body_inertia[self.asset.body_adrs_read].copy(), dtype=torch.float32)
+            for model in self.asset.mj_models
+        ]
+        return torch.stack(inertias)
+
+    def set_inertias(self, inertias: ArrayType, indices: ArrayType):
+        indices_t = self._normalize_indices(indices)
+        inertias_t = self._rows_for_indices(inertias, indices_t, trailing_shape=(self.asset.num_bodies, 3))
+        for row, env_id in enumerate(indices_t.tolist()):
+            self.asset.mj_models[env_id].body_inertia[self.asset.body_adrs_read] = inertias_t[row].detach().cpu().numpy()
+        self.asset.data.default_inertia[indices_t] = inertias_t
+
+    def get_material_properties(self):
+        return self._material_properties.clone()
+
+    def set_material_properties(self, materials: ArrayType, indices: ArrayType):
+        indices_t = self._normalize_indices(indices)
+        materials_t = torch.as_tensor(materials, dtype=torch.float32)
+        if materials_t.ndim == 1:
+            materials_t = materials_t.reshape(indices_t.numel(), self.max_shapes, 3)
+        elif materials_t.ndim == 2 and materials_t.shape[-1] == 3:
+            materials_t = materials_t.reshape(indices_t.numel(), self.max_shapes, 3)
+        elif materials_t.ndim != 3:
+            raise ValueError(f"materials must flatten or have shape (num_envs, max_shapes, 3), got {tuple(materials_t.shape)}.")
+        if materials_t.shape != (indices_t.numel(), self.max_shapes, 3):
+            if materials_t.shape[0] == self.asset.num_instances:
+                materials_t = materials_t.index_select(0, indices_t)
+            else:
+                raise ValueError(
+                    f"materials shape must be {(indices_t.numel(), self.max_shapes, 3)} or "
+                    f"({self.asset.num_instances}, {self.max_shapes}, 3), got {tuple(materials_t.shape)}."
+                )
+
+        for row, env_id in enumerate(indices_t.tolist()):
+            self._material_properties[env_id] = materials_t[row]
+            if self.max_shapes:
+                self.asset.mj_models[env_id].geom_friction[self.asset.geom_adrs, 0] = materials_t[row, :, 1].detach().cpu().numpy()
+
+    def _read_material_properties(self):
+        materials = torch.zeros(self.asset.num_instances, self.max_shapes, 3)
+        for env_id, model in enumerate(self.asset.mj_models):
+            if self.max_shapes:
+                dynamic_friction = torch.as_tensor(model.geom_friction[self.asset.geom_adrs, 0].copy(), dtype=torch.float32)
+                materials[env_id, :, 0] = dynamic_friction
+                materials[env_id, :, 1] = dynamic_friction
+        return materials
+
+    def _normalize_indices(self, indices: ArrayType | int | slice | None):
+        if indices is None or (isinstance(indices, slice) and indices == slice(None)):
+            return torch.arange(self.asset.num_instances, dtype=torch.long)
+        if isinstance(indices, int):
+            indices_t = torch.tensor([indices], dtype=torch.long)
+        else:
+            indices_t = torch.as_tensor(indices, dtype=torch.long).reshape(-1)
+        if indices_t.numel() and (torch.any(indices_t < 0) or torch.any(indices_t >= self.asset.num_instances)):
+            raise ValueError(f"indices must be in [0, {self.asset.num_instances}), got {indices_t.tolist()}.")
+        return indices_t
+
+    def _rows_for_indices(self, value: ArrayType, indices: torch.Tensor, trailing_shape: tuple[int, ...]):
+        value_t = torch.as_tensor(value, dtype=torch.float32)
+        expected_subset = (indices.numel(), *trailing_shape)
+        expected_all = (self.asset.num_instances, *trailing_shape)
+        if tuple(value_t.shape) == expected_subset:
+            return value_t.clone()
+        if tuple(value_t.shape) == expected_all:
+            return value_t.index_select(0, indices).clone()
+        raise ValueError(f"Expected value shape {expected_subset} or {expected_all}, got {tuple(value_t.shape)}.")
+
+
 @dataclass
 class MJObjectViewData:
     default_root_state: ArrayType
+    default_mass: ArrayType
+    default_inertia: ArrayType
     default_joint_pos: ArrayType
     default_joint_vel: ArrayType
     soft_joint_pos_limits: ArrayType
@@ -585,6 +680,7 @@ class MJObjectView:
         self.num_instances = articulation.num_instances
         self.body_names = list(spec.body_names)
         self.joint_names = list(spec.joint_names)
+        self.mj_models = articulation.mj_models
         self.mj_model = articulation.mj_model
         self.mj_datas = articulation.mj_datas
         self.mj_data = articulation.mj_data
@@ -596,6 +692,11 @@ class MJObjectView:
         if np.any(self.body_adrs_read < 0):
             missing = [name for name, body_id in zip(self.body_names, self.body_adrs_read) if body_id < 0]
             raise ValueError(f"Missing MuJoCo object body names: {missing}")
+        body_adrs_set = set(int(body_id) for body_id in self.body_adrs_read)
+        self.geom_adrs = np.array([
+            geom_id for geom_id in range(self.mj_model.ngeom)
+            if int(self.mj_model.geom_bodyid[geom_id]) in body_adrs_set
+        ], dtype=np.int32)
 
         self.joint_mj_ids = np.array([
             mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_JOINT, name)
@@ -625,14 +726,27 @@ class MJObjectView:
 
         joint_pos_limits = _joint_pos_limits(self.mj_model, self.joint_mj_ids)
         joint_vel_limits = torch.full((self.num_joints,), float("inf"), dtype=torch.float32)
+        default_mass = torch.stack([
+            torch.as_tensor(model.body_mass[self.body_adrs_read].copy(), dtype=torch.float32)
+            for model in self.mj_models
+        ])
+        default_inertia = torch.stack([
+            torch.as_tensor(model.body_inertia[self.body_adrs_read].copy(), dtype=torch.float32)
+            for model in self.mj_models
+        ])
         default_root_state = torch.zeros(self.num_instances, 13)
         self._data = MJObjectViewData(
             default_root_state=default_root_state,
+            default_mass=default_mass,
+            default_inertia=default_inertia,
             default_joint_pos=default_joint_pos,
             default_joint_vel=default_joint_vel,
             soft_joint_pos_limits=joint_pos_limits.expand(self.num_instances, -1, -1).clone(),
             soft_joint_vel_limits=joint_vel_limits.expand(self.num_instances, -1).clone(),
         )
+        self._custom_friction = torch.zeros(self.num_instances, dtype=torch.float32)
+        self._custom_damping = torch.zeros(self.num_instances, dtype=torch.float32)
+        self.root_physx_view = MJRootPhysxView(self)
         self.update(0.0)
         self._data.default_root_state[:, 0:3] = self._data.root_link_pos_w
         self._data.default_root_state[:, 3:7] = self._data.root_link_quat_w
@@ -693,7 +807,7 @@ class MJObjectView:
             root_np = root_pose_t[row].detach().cpu().numpy()
             data.qpos[self.root_qposadr:self.root_qposadr + 3] = root_np[:3]
             data.qpos[self.root_qposadr + 3:self.root_qposadr + 7] = root_np[3:7]
-            mujoco.mj_forward(self.mj_model, data)
+            mujoco.mj_forward(self.mj_models[env_id], data)
         self.articulation.update(0.0)
         self.update(0.0)
 
@@ -706,7 +820,7 @@ class MJObjectView:
         for row, env_id in enumerate(env_ids_t.tolist()):
             data = self.mj_datas[env_id]
             data.qvel[self.root_qveladr:self.root_qveladr + 6] = root_velocity_t[row].detach().cpu().numpy()
-            mujoco.mj_forward(self.mj_model, data)
+            mujoco.mj_forward(self.mj_models[env_id], data)
         self.articulation.update(0.0)
         self.update(0.0)
 
@@ -731,9 +845,22 @@ class MJObjectView:
                 data.qpos[qposadr] = joint_pos_t[row].detach().cpu().numpy()
             if joint_vel_t is not None:
                 data.qvel[qveladr] = joint_vel_t[row].detach().cpu().numpy()
-            mujoco.mj_forward(self.mj_model, data)
+            mujoco.mj_forward(self.mj_models[env_id], data)
         self.articulation.update(0.0)
         self.update(0.0)
+
+    def write_joint_armature_to_sim(self, armature: ArrayType, joint_ids: ArrayType = None, env_ids: ArrayType = None):
+        env_ids_t = self.articulation._normalize_env_ids(env_ids)
+        joint_ids_n = self._normalize_joint_ids(joint_ids)
+        joint_ids_idx = joint_ids_n.detach().cpu().numpy() if isinstance(joint_ids_n, torch.Tensor) else joint_ids_n
+        dof_adrs = self.joint_qveladr_read[joint_ids_idx]
+        armature_t = self.articulation._rows_for_envs(armature, env_ids_t)
+
+        for row, env_id in enumerate(env_ids_t.tolist()):
+            values = armature_t[row].detach().cpu().numpy()
+            if np.ndim(values) == 0:
+                values = np.asarray([values])
+            self.mj_models[env_id].dof_armature[dof_adrs] = values
 
     def _find_root_free_joint(self):
         root_body_id = int(self.body_adrs_read[0])
@@ -827,9 +954,8 @@ class MjContactSensor:
         sensor_body_to_idx = {int(body_id): idx for idx, body_id in enumerate(self.body_adrs_read)}
         filter_body_to_idx = {int(body_id): idx for idx, body_id in enumerate(self.filter_body_adrs)}
         force_contact = np.zeros(6, dtype=np.float64)
-        model = self.articulation.mj_model
-
         for env_id, data in enumerate(self.articulation.mj_datas):
+            model = self.articulation.mj_models[env_id]
             for contact_id in range(data.ncon):
                 contact = data.contact[contact_id]
                 body1 = int(model.geom_bodyid[contact.geom1])
@@ -1020,9 +1146,9 @@ class MJSim:
 
     def step(self, render: bool = False):
         for articulation in self.scene._sim_articulations:
-            for data in articulation.mj_datas:
-                mujoco.mj_step(articulation.mj_model, data)
-                mujoco.mj_rnePostConstraint(articulation.mj_model, data)
+            for model, data in zip(articulation.mj_models, articulation.mj_datas, strict=True):
+                mujoco.mj_step(model, data)
+                mujoco.mj_rnePostConstraint(model, data)
         if self.realtime:
             time.sleep(self.get_physics_dt())
 
