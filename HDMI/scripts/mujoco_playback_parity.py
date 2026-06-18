@@ -78,6 +78,7 @@ def run_parity(
     reward_config: Mapping[str, Any] | None = None,
     policy_path: str | Path | None = None,
     policy_rollout: bool = False,
+    trace_json_path: str | Path | None = None,
 ) -> dict[str, Any]:
     if policy_rollout and policy_path is None:
         raise ValueError("--policy-rollout requires --policy-path.")
@@ -133,6 +134,7 @@ def run_parity(
             "contact_eef_pos_offset": _contact_summary_value(contact_eef_pos_offset),
         }
     )
+    policy_rollout_metrics: MujocoPolicyRolloutMetrics | None = None
     if policy_path is not None:
         policy_reference = _policy_reference_from_export(
             motion_dir=motion_dir,
@@ -157,23 +159,27 @@ def run_parity(
             fallback_joint_names=joint_names,
             fallback_root_body_name=root_body_name,
         )
-        summary.update(
-            summarize_policy_rollout_metrics(
-                run_mujoco_policy_rollout(
-                    scene=scene,
-                    policy_bundle=MujocoPolicyBundle.load(policy_path),
-                    reference=policy_reference,
-                    steps=steps,
-                    reward_cfg=reward_config,
-                    object_name=object_name,
-                    object_body_name=object_body_name,
-                    object_joint_name=object_joint_name,
-                    contact_eef_body_names=contact_eef_body_names,
-                    contact_target_pos_offset=contact_target_pos_offset,
-                    contact_eef_pos_offset=contact_eef_pos_offset,
-                )
-            )
+        policy_rollout_metrics = run_mujoco_policy_rollout(
+            scene=scene,
+            policy_bundle=MujocoPolicyBundle.load(policy_path),
+            reference=policy_reference,
+            steps=steps,
+            reward_cfg=reward_config,
+            object_name=object_name,
+            object_body_name=object_body_name,
+            object_joint_name=object_joint_name,
+            contact_eef_body_names=contact_eef_body_names,
+            contact_target_pos_offset=contact_target_pos_offset,
+            contact_eef_pos_offset=contact_eef_pos_offset,
         )
+        summary.update(summarize_policy_rollout_metrics(policy_rollout_metrics))
+    if trace_json_path is not None:
+        write_trace_json(
+            trace_json_path,
+            playback_metrics=metrics,
+            policy_rollout_metrics=policy_rollout_metrics,
+        )
+        summary["trace_json_path"] = str(trace_json_path)
     return summary
 
 
@@ -242,6 +248,42 @@ def summarize_policy_rollout_metrics(metrics: MujocoPolicyRolloutMetrics) -> dic
     return summary
 
 
+def write_trace_json(
+    path: str | Path,
+    *,
+    playback_metrics: PlaybackParityMetrics,
+    policy_rollout_metrics: MujocoPolicyRolloutMetrics | None = None,
+) -> None:
+    trace: dict[str, Any] = {
+        "playback": {
+            "q_l2": _trace_tensor(playback_metrics.q_l2),
+            "body_pos_l2": _trace_tensor(playback_metrics.body_pos_l2),
+            "reward": _trace_tensor(playback_metrics.reward),
+        },
+        "policy_rollout": None,
+    }
+    if policy_rollout_metrics is not None:
+        trace["policy_rollout"] = {
+            "q_l2": _trace_tensor(policy_rollout_metrics.q_l2),
+            "body_pos_l2": _trace_tensor(policy_rollout_metrics.body_pos_l2),
+            "actions": _trace_tensor(policy_rollout_metrics.actions),
+            "joint_position_targets": _trace_tensor(policy_rollout_metrics.joint_position_targets),
+            "action_rate_l2": _trace_tensor(policy_rollout_metrics.action_rate_l2),
+            "reward": _trace_tensor(policy_rollout_metrics.reward),
+        }
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(trace, sort_keys=True))
+
+
+def _trace_tensor(value: torch.Tensor | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    value = value.detach().cpu()
+    return {"shape": list(value.shape), "values": value.tolist()}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     with contextlib.redirect_stdout(sys.stderr):
@@ -266,6 +308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             reward_config=reward_config,
             policy_path=args.policy_path,
             policy_rollout=args.policy_rollout,
+            trace_json_path=args.trace_json,
         )
         if mapping_report is not None:
             summary.update(_task_mapping_summary(mapping_report))
@@ -297,6 +340,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--policy-rollout",
         action="store_true",
         help="Run the exported policy in a closed-loop MuJoCo rollout and report rollout parity metrics.",
+    )
+    parser.add_argument(
+        "--trace-json",
+        default=None,
+        help="Optional path to write per-step MuJoCo parity trace tensors.",
     )
     return parser.parse_args(argv)
 

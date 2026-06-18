@@ -696,6 +696,54 @@ def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path,
     assert summary["policy_rollout_reward_max"] == 1.0
 
 
+
+def test_mujoco_playback_parity_cli_writes_per_step_trace_json(tmp_path, capsys):
+    object_body_name, object_joint_name = _write_motion_dir(tmp_path)
+    joint_name = json.loads((tmp_path / "meta.json").read_text())["joint_names"][0]
+    policy_path = _write_rollout_policy_bundle(tmp_path, joint_name)
+    reward_cfg_path = tmp_path / "trace-reward.json"
+    reward_cfg_path.write_text(json.dumps({"loco": {"survival": {"weight": 1.0}}}))
+    trace_path = tmp_path / "trace/mujoco-trace.json"
+    script = _load_cli_module()
+
+    try:
+        exit_code = script.main(
+            [
+                "--motion-dir",
+                str(tmp_path),
+                "--object-name",
+                "door",
+                "--object-body-name",
+                object_body_name,
+                "--object-joint-name",
+                object_joint_name,
+                "--policy-path",
+                str(policy_path),
+                "--policy-rollout",
+                "--num-envs",
+                "2",
+                "--reward-config-json",
+                str(reward_cfg_path),
+                "--trace-json",
+                str(trace_path),
+                "--steps",
+                "0,1",
+            ]
+        )
+    except SystemExit as exc:
+        exit_code = exc.code
+
+    assert exit_code == 0
+    _ = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    trace = json.loads(trace_path.read_text())
+    assert trace["playback"]["q_l2"]["shape"] == [2, 2]
+    assert trace["playback"]["body_pos_l2"]["shape"] == [2, 2]
+    assert trace["playback"]["reward"]["shape"] == [2, 2, 1]
+    assert trace["policy_rollout"]["reward"]["shape"] == [2, 2, 1]
+    assert trace["policy_rollout"]["action_rate_l2"]["shape"] == [2, 2, 1]
+    assert trace["policy_rollout"]["actions"]["shape"] == [2, 2, 1]
+    assert trace["policy_rollout"]["reward"]["values"] == [[[1.0], [1.0]], [[1.0], [1.0]]]
+
 def test_mujoco_playback_parity_cli_fills_object_policy_observations_from_reference(tmp_path, capsys):
     object_body_name, object_joint_name = _write_motion_dir(tmp_path)
     policy_path = _write_object_policy_bundle(tmp_path, object_body_name)
