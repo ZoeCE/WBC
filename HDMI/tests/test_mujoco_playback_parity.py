@@ -1,5 +1,6 @@
 import pytest
 import torch
+from types import SimpleNamespace
 
 from active_adaptation.mujoco.motion_reference import MujocoMotionReference
 from active_adaptation.mujoco import playback_parity
@@ -286,6 +287,39 @@ def test_reward_from_spec_matches_hdmi_multiplicative_group():
     object_joint = torch.exp(-torch.tensor([[0.3]]) / 0.25)
     expected = (2.0 * object_pos) * (0.5 * object_joint)
     assert torch.allclose(reward, expected)
+
+
+def test_contact_forces_w_sums_all_object_filter_body_forces():
+    eef_body_name = "right_wrist_yaw_link"
+    force_matrix_w = torch.zeros(2, 1, 2, 3)
+    force_matrix_w[:, 0, 1] = torch.tensor([[3.0, 0.0, 0.0], [0.0, 4.0, 0.0]])
+
+    class Sensor:
+        data = SimpleNamespace(force_matrix_w=force_matrix_w)
+
+        def find_bodies(self, name_keys, preserve_order=False):
+            assert list(name_keys) == [eef_body_name]
+            return [0], [eef_body_name]
+
+    scene = SimpleNamespace(
+        sensors={
+            f"{eef_body_name}_door_contact_forces": Sensor(),
+        }
+    )
+    object_view = SimpleNamespace(spec=SimpleNamespace(asset_name="door"))
+
+    forces_w = playback_parity._contact_forces_w(
+        scene=scene,
+        eef_body_names=[eef_body_name],
+        object_name="door",
+        object_view=object_view,
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+        num_envs=2,
+    )
+
+    expected = torch.tensor([[[3.0, 0.0, 0.0]], [[0.0, 4.0, 0.0]]])
+    assert torch.allclose(forces_w, expected)
 
 
 def test_reward_state_from_mujoco_scene_feeds_reward_spec():

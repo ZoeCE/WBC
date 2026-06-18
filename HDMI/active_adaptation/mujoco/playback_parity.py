@@ -1216,7 +1216,7 @@ def _contact_forces_w(
         force_matrix_w = sensor.data.force_matrix_w
         if force_matrix_w.shape[2] == 0:
             continue
-        forces_w[:, eef_index] = force_matrix_w[:, sensor_body_index, 0].to(dtype=dtype, device=device)
+        forces_w[:, eef_index] = force_matrix_w[:, sensor_body_index].sum(dim=1).to(dtype=dtype, device=device)
     return forces_w
 
 
