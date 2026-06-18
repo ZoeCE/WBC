@@ -25,6 +25,8 @@ class MujocoPolicyBundle:
     observation_builder: MujocoObservationBuilder
     policy_joint_names: list[str]
     observation_joint_names: list[str]
+    isaac_joint_names: list[str]
+    isaac_body_names: list[str]
     action_scale: torch.Tensor
     default_joint_pos: torch.Tensor
     observation_default_joint_pos: torch.Tensor
@@ -44,11 +46,12 @@ class MujocoPolicyBundle:
         config = _load_yaml_mapping(config_path)
         observation_cfg = _required_mapping(config, "observation", config_path)
         policy_joint_names = _required_string_list(config, "policy_joint_names", config_path)
-        fallback_observation_joint_names = _optional_string_list(config, "isaac_joint_names") or policy_joint_names
+        isaac_joint_names = _optional_string_list(config, "isaac_joint_names") or policy_joint_names
+        isaac_body_names = _optional_string_list(config, "isaac_body_names") or []
         observation_builder = MujocoObservationBuilder(
             observation_cfg,
             policy_joint_names=policy_joint_names,
-            observation_joint_names=fallback_observation_joint_names,
+            observation_joint_names=isaac_joint_names,
         )
 
         policy = _torch_load_policy(policy_path, map_location=map_location)
@@ -79,6 +82,8 @@ class MujocoPolicyBundle:
             observation_builder=observation_builder,
             policy_joint_names=policy_joint_names,
             observation_joint_names=observation_builder.joint_pos_names,
+            isaac_joint_names=isaac_joint_names,
+            isaac_body_names=isaac_body_names,
             action_scale=action_scale,
             default_joint_pos=default_joint_pos,
             observation_default_joint_pos=observation_default_joint_pos,

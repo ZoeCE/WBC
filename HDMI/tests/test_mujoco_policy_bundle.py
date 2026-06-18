@@ -37,6 +37,8 @@ def test_exported_policy_bundle_builds_tensordict_and_scaled_joint_targets(tmp_p
                     "right_joint": 0.25,
                 },
                 "policy_joint_names": ["left_joint", "right_joint"],
+                "isaac_joint_names": ["left_joint", "right_joint"],
+                "isaac_body_names": ["pelvis", "left_foot"],
                 "default_joint_pos": {
                     "left_joint": 1.0,
                     "right_joint": -1.0,
@@ -52,6 +54,8 @@ def test_exported_policy_bundle_builds_tensordict_and_scaled_joint_targets(tmp_p
     assert td["is_init"].shape == (1, 1)
     assert td["is_init"].dtype is torch.bool
     assert bundle.policy_joint_names == ["left_joint", "right_joint"]
+    assert bundle.isaac_joint_names == ["left_joint", "right_joint"]
+    assert bundle.isaac_body_names == ["pelvis", "left_foot"]
     assert torch.allclose(bundle.action_scale, torch.tensor([0.5, 0.25]))
     assert torch.allclose(bundle.default_joint_pos, torch.tensor([1.0, -1.0]))
 
