@@ -15,7 +15,6 @@ from tqdm import tqdm
 from setproctitle import setproctitle
 
 import active_adaptation as aa
-from isaaclab.app import AppLauncher
 # from active_adaptation.utils.torchrl import SyncDataCollector
 from torchrl.envs.utils import set_exploration_type, ExplorationType
 from tensordict.nn import TensorDictModuleBase
@@ -32,18 +31,30 @@ torch.backends.cudnn.benchmark = False
 FILE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(FILE_PATH, "..", "cfg")
 
+
+def _configure_backend_and_app(cfg: DictConfig):
+    backend = cfg.get("backend", aa.get_backend())
+    aa.set_backend(backend)
+    if backend == "mujoco":
+        return None
+
+    from isaaclab.app import AppLauncher
+
+    app_launcher = AppLauncher(
+        OmegaConf.to_container(cfg.app),
+        distributed=aa.is_distributed(),
+        device=f"cuda:{aa.get_local_rank()}",
+    )
+    return app_launcher.app
+
+
 @hydra.main(config_path=CONFIG_PATH, config_name="train", version_base=None)
 def main(cfg: DictConfig):
     OmegaConf.resolve(cfg)
     OmegaConf.set_struct(cfg, False)
     
     print(f"is_distributed: {aa.is_distributed()}, local_rank: {aa.get_local_rank()}/{aa.get_world_size()}")
-    app_launcher = AppLauncher(
-        OmegaConf.to_container(cfg.app),
-        distributed=aa.is_distributed(),
-        device=f"cuda:{aa.get_local_rank()}"
-    )
-    simulation_app = app_launcher.app
+    simulation_app = _configure_backend_and_app(cfg)
 
     run = wandb.init(
         job_type=cfg.wandb.job_type,

@@ -5,6 +5,7 @@ hydra:
     chdir: true
 
 headless: true
+backend: isaac
 exp_name: ${oc.select:task.name,test}-${oc.select:algo.name,none}
 
 app:
