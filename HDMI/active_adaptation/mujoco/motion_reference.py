@@ -32,6 +32,9 @@ class MujocoMotionReference:
     body_quat_w: torch.Tensor
     joint_pos: torch.Tensor
     fps: float
+    body_lin_vel_w: torch.Tensor | None = None
+    body_ang_vel_w: torch.Tensor | None = None
+    joint_vel: torch.Tensor | None = None
 
     @classmethod
     def from_motion_dir(
@@ -57,6 +60,13 @@ class MujocoMotionReference:
         joint_indices = _indices_for(requested_joint_names, available_joint_names, "joint")
         root_body_index = _indices_for([root_body_name], available_body_names, "body")[0]
 
+        body_pos_w = torch.as_tensor(motion["body_pos_w"], dtype=torch.float32)
+        body_quat_w = torch.as_tensor(motion["body_quat_w"], dtype=torch.float32)
+        joint_pos = torch.as_tensor(motion["joint_pos"], dtype=torch.float32)
+        body_lin_vel_w = _motion_tensor_or_zeros(motion, "body_lin_vel_w", body_pos_w)
+        body_ang_vel_w = _motion_tensor_or_zeros(motion, "body_ang_vel_w", body_pos_w)
+        joint_vel = _motion_tensor_or_zeros(motion, "joint_vel", joint_pos)
+
         return cls(
             body_names=available_body_names,
             joint_names=available_joint_names,
@@ -67,10 +77,13 @@ class MujocoMotionReference:
             body_indices=torch.as_tensor(body_indices, dtype=torch.long),
             joint_indices=torch.as_tensor(joint_indices, dtype=torch.long),
             root_body_index=root_body_index,
-            body_pos_w=torch.as_tensor(motion["body_pos_w"], dtype=torch.float32),
-            body_quat_w=torch.as_tensor(motion["body_quat_w"], dtype=torch.float32),
-            joint_pos=torch.as_tensor(motion["joint_pos"], dtype=torch.float32),
+            body_pos_w=body_pos_w,
+            body_quat_w=body_quat_w,
+            joint_pos=joint_pos,
             fps=float(meta["fps"]),
+            body_lin_vel_w=body_lin_vel_w,
+            body_ang_vel_w=body_ang_vel_w,
+            joint_vel=joint_vel,
         )
 
     @property
@@ -106,3 +119,9 @@ def _indices_for(requested_names: Sequence[str], available_names: Sequence[str],
     if missing:
         raise ValueError(f"missing {kind} names in motion metadata: {missing}")
     return [available_names.index(name) for name in requested_names]
+
+
+def _motion_tensor_or_zeros(motion: np.lib.npyio.NpzFile, key: str, like: torch.Tensor) -> torch.Tensor:
+    if key in motion:
+        return torch.as_tensor(motion[key], dtype=torch.float32)
+    return torch.zeros_like(like)

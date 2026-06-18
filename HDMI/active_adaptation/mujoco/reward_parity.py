@@ -54,6 +54,67 @@ def joint_position_tracking_product(
     return torch.exp(-error.mean(dim=1) / sigma).unsqueeze(1)
 
 
+def joint_velocity_tracking_product(
+    joint_vel: torch.Tensor,
+    ref_joint_vel: torch.Tensor,
+    sigma: float = 0.03,
+    tolerance: float | Sequence[float] | torch.Tensor = 0.0,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI joint velocity product rewards."""
+    _require_same_shape("joint_vel", joint_vel, "ref_joint_vel", ref_joint_vel)
+    if sigma <= 0:
+        raise ValueError(f"sigma must be positive, got {sigma}.")
+
+    tolerance_t = _tolerance_tensor(tolerance, joint_vel)
+    error = ((ref_joint_vel - joint_vel).abs() - tolerance_t).clamp_min(0.0)
+    return torch.exp(-error.mean(dim=1) / sigma).unsqueeze(1)
+
+
+def keypoint_orientation_tracking_product(
+    actual_body_quat_w: torch.Tensor,
+    ref_body_quat_w: torch.Tensor,
+    sigma: float = 0.03,
+    tolerance: float | Sequence[float] | torch.Tensor = 0.0,
+    *,
+    local: bool = False,
+    root_quat_w: torch.Tensor | None = None,
+    ref_root_quat_w: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI keypoint orientation product rewards."""
+    _require_same_shape("actual_body_quat_w", actual_body_quat_w, "ref_body_quat_w", ref_body_quat_w)
+    _require_last_dim("actual_body_quat_w", actual_body_quat_w, 4)
+    if sigma <= 0:
+        raise ValueError(f"sigma must be positive, got {sigma}.")
+
+    if local:
+        root_quat = _yaw_quat(_required_tensor("root_quat_w", root_quat_w))[:, None, :].expand_as(actual_body_quat_w)
+        ref_root_quat = _yaw_quat(_required_tensor("ref_root_quat_w", ref_root_quat_w))[:, None, :].expand_as(ref_body_quat_w)
+        actual_body_quat_w = _quat_mul(_quat_conjugate(root_quat), actual_body_quat_w)
+        ref_body_quat_w = _quat_mul(_quat_conjugate(ref_root_quat), ref_body_quat_w)
+
+    diff = _quat_mul(_quat_conjugate(ref_body_quat_w), actual_body_quat_w)
+    tolerance_t = _tolerance_tensor(tolerance, actual_body_quat_w)
+    error = (_axis_angle_from_quat(diff).norm(dim=-1) - tolerance_t).clamp_min(0.0)
+    return torch.exp(-error.mean(dim=1) / sigma).unsqueeze(1)
+
+
+def keypoint_velocity_tracking_product(
+    actual_body_vel_w: torch.Tensor,
+    ref_body_vel_w: torch.Tensor,
+    sigma: float = 0.03,
+    tolerance: float | Sequence[float] | torch.Tensor = 0.0,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI keypoint linear/angular velocity product rewards."""
+    _require_same_shape("actual_body_vel_w", actual_body_vel_w, "ref_body_vel_w", ref_body_vel_w)
+    _require_last_dim("actual_body_vel_w", actual_body_vel_w, 3)
+    if sigma <= 0:
+        raise ValueError(f"sigma must be positive, got {sigma}.")
+
+    tolerance_t = _tolerance_tensor(tolerance, actual_body_vel_w)
+    error = ((ref_body_vel_w - actual_body_vel_w).norm(dim=-1) - tolerance_t).clamp_min(0.0)
+    return torch.exp(-error.mean(dim=1) / sigma).unsqueeze(1)
+
+
 def object_position_tracking(
     object_pos_w: torch.Tensor,
     ref_object_pos_w: torch.Tensor,

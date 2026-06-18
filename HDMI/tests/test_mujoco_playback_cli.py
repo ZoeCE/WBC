@@ -277,9 +277,10 @@ reward:
     assert summary["reward_shape"] == [2, 1, 2]
     assert summary["reward_terms_used"] == [
         "tracking.joint_pos_tracking_product",
+        "tracking.joint_vel_tracking_product",
         "object_tracking.object_joint_pos_tracking",
     ]
-    assert summary["reward_terms_skipped"] == ["tracking.joint_vel_tracking_product"]
+    assert summary["reward_terms_skipped"] == []
 
 
 def test_mujoco_playback_parity_cli_infers_inputs_from_task_yaml(tmp_path, capsys):

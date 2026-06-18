@@ -17,12 +17,20 @@ class PlaybackParityMetrics:
 class MujocoRewardState:
     actual_body_pos_w: torch.Tensor | None = None
     ref_body_pos_w: torch.Tensor | None = None
+    actual_body_quat_w: torch.Tensor | None = None
+    ref_body_quat_w: torch.Tensor | None = None
+    actual_body_lin_vel_w: torch.Tensor | None = None
+    ref_body_lin_vel_w: torch.Tensor | None = None
+    actual_body_ang_vel_w: torch.Tensor | None = None
+    ref_body_ang_vel_w: torch.Tensor | None = None
     root_pos_w: torch.Tensor | None = None
     root_quat_w: torch.Tensor | None = None
     ref_root_pos_w: torch.Tensor | None = None
     ref_root_quat_w: torch.Tensor | None = None
     joint_pos: torch.Tensor | None = None
     ref_joint_pos: torch.Tensor | None = None
+    joint_vel: torch.Tensor | None = None
+    ref_joint_vel: torch.Tensor | None = None
     object_pos_w: torch.Tensor | None = None
     ref_object_pos_w: torch.Tensor | None = None
     object_quat_w: torch.Tensor | None = None
@@ -61,7 +69,11 @@ def build_reward_state_from_scene(
     body_names: str | Sequence[str] | None = None,
     joint_names: str | Sequence[str] | None = None,
     ref_body_pos_w: torch.Tensor | None = None,
+    ref_body_quat_w: torch.Tensor | None = None,
+    ref_body_lin_vel_w: torch.Tensor | None = None,
+    ref_body_ang_vel_w: torch.Tensor | None = None,
     ref_joint_pos: torch.Tensor | None = None,
+    ref_joint_vel: torch.Tensor | None = None,
     ref_root_pos_w: torch.Tensor | None = None,
     ref_root_quat_w: torch.Tensor | None = None,
     object_name: str | None = None,
@@ -81,7 +93,11 @@ def build_reward_state_from_scene(
         raise KeyError("MuJoCo scene does not contain a 'robot' articulation.")
 
     ref_body_pos_w = _current_reference_frame(ref_body_pos_w, state_rank=3)
+    ref_body_quat_w = _current_reference_frame(ref_body_quat_w, state_rank=3)
+    ref_body_lin_vel_w = _current_reference_frame(ref_body_lin_vel_w, state_rank=3)
+    ref_body_ang_vel_w = _current_reference_frame(ref_body_ang_vel_w, state_rank=3)
     ref_joint_pos = _current_reference_frame(ref_joint_pos, state_rank=2)
+    ref_joint_vel = _current_reference_frame(ref_joint_vel, state_rank=2)
     ref_root_pos_w = _current_reference_frame(ref_root_pos_w, state_rank=2)
     ref_root_quat_w = _current_reference_frame(ref_root_quat_w, state_rank=2)
     ref_object_pos_w = _current_reference_frame(ref_object_pos_w, state_rank=2)
@@ -93,20 +109,38 @@ def build_reward_state_from_scene(
     ref_object_contact = _current_reference_frame(ref_object_contact, state_rank=2)
 
     actual_body_pos_w = None
-    if body_names is not None or ref_body_pos_w is not None:
+    actual_body_quat_w = None
+    actual_body_lin_vel_w = None
+    actual_body_ang_vel_w = None
+    if (
+        body_names is not None
+        or ref_body_pos_w is not None
+        or ref_body_quat_w is not None
+        or ref_body_lin_vel_w is not None
+        or ref_body_ang_vel_w is not None
+    ):
         body_indices = None if body_names is None else _resolve_indices(robot, "find_bodies", body_names)
         if body_indices is None:
             actual_body_pos_w = robot.data.body_link_pos_w
+            actual_body_quat_w = robot.data.body_link_quat_w
+            actual_body_lin_vel_w = robot.data.body_com_lin_vel_w
+            actual_body_ang_vel_w = robot.data.body_com_ang_vel_w
         else:
             actual_body_pos_w = robot.data.body_link_pos_w[:, body_indices]
+            actual_body_quat_w = robot.data.body_link_quat_w[:, body_indices]
+            actual_body_lin_vel_w = robot.data.body_com_lin_vel_w[:, body_indices]
+            actual_body_ang_vel_w = robot.data.body_com_ang_vel_w[:, body_indices]
 
     joint_pos = None
-    if joint_names is not None or ref_joint_pos is not None:
+    joint_vel = None
+    if joint_names is not None or ref_joint_pos is not None or ref_joint_vel is not None:
         joint_indices = None if joint_names is None else _resolve_indices(robot, "find_joints", joint_names)
         if joint_indices is None:
             joint_pos = robot.data.joint_pos
+            joint_vel = robot.data.joint_vel
         else:
             joint_pos = robot.data.joint_pos[:, joint_indices]
+            joint_vel = robot.data.joint_vel[:, joint_indices]
 
     object_pos_w = None
     object_quat_w = None
@@ -133,12 +167,20 @@ def build_reward_state_from_scene(
     return MujocoRewardState(
         actual_body_pos_w=actual_body_pos_w,
         ref_body_pos_w=ref_body_pos_w,
+        actual_body_quat_w=actual_body_quat_w,
+        ref_body_quat_w=ref_body_quat_w,
+        actual_body_lin_vel_w=actual_body_lin_vel_w,
+        ref_body_lin_vel_w=ref_body_lin_vel_w,
+        actual_body_ang_vel_w=actual_body_ang_vel_w,
+        ref_body_ang_vel_w=ref_body_ang_vel_w,
         root_pos_w=robot.data.root_link_pos_w,
         root_quat_w=robot.data.root_link_quat_w,
         ref_root_pos_w=ref_root_pos_w,
         ref_root_quat_w=ref_root_quat_w,
         joint_pos=joint_pos,
         ref_joint_pos=ref_joint_pos,
+        joint_vel=joint_vel,
+        ref_joint_vel=ref_joint_vel,
         object_pos_w=object_pos_w,
         ref_object_pos_w=ref_object_pos_w,
         object_quat_w=object_quat_w,
@@ -192,7 +234,31 @@ def compute_kinematic_motion_playback_parity(
             body_names=reference.requested_body_names,
             object_view=object_view,
         )
+        actual_body_quat_w = _gather_scene_body_quat_w(
+            robot=robot,
+            body_names=reference.requested_body_names,
+            object_view=object_view,
+        )
+        actual_body_lin_vel_w = _gather_scene_body_lin_vel_w(
+            robot=robot,
+            body_names=reference.requested_body_names,
+            object_view=object_view,
+        )
+        actual_body_ang_vel_w = _gather_scene_body_ang_vel_w(
+            robot=robot,
+            body_names=reference.requested_body_names,
+            object_view=object_view,
+        )
         ref_body_pos_w = _expand_reference_frame(_reference_body_pos_w(reference, step), scene.num_envs)
+        ref_body_quat_w = _expand_reference_frame(_reference_body_quat_w(reference, step), scene.num_envs)
+        ref_body_lin_vel_w = _expand_reference_frame(_reference_body_lin_vel_w(reference, step), scene.num_envs)
+        ref_body_ang_vel_w = _expand_reference_frame(_reference_body_ang_vel_w(reference, step), scene.num_envs)
+        actual_joint_vel = _gather_scene_joint_vel(
+            robot=robot,
+            joint_names=reference.requested_joint_names,
+            object_view=object_view,
+        )
+        ref_joint_vel = _expand_reference_frame(_reference_joint_vel(reference, step), scene.num_envs)
 
         reward = None
         if reward_cfg is not None:
@@ -203,8 +269,16 @@ def compute_kinematic_motion_playback_parity(
                 step=step,
                 actual_body_pos_w=actual_body_pos_w,
                 ref_body_pos_w=ref_body_pos_w,
+                actual_body_quat_w=actual_body_quat_w,
+                ref_body_quat_w=ref_body_quat_w,
+                actual_body_lin_vel_w=actual_body_lin_vel_w,
+                ref_body_lin_vel_w=ref_body_lin_vel_w,
+                actual_body_ang_vel_w=actual_body_ang_vel_w,
+                ref_body_ang_vel_w=ref_body_ang_vel_w,
                 actual_joint_pos=actual_joint_pos,
                 ref_joint_pos=ref_joint_pos,
+                actual_joint_vel=actual_joint_vel,
+                ref_joint_vel=ref_joint_vel,
                 object_body_name=object_body_name or object_name,
                 object_joint_name=object_joint_name,
             )
@@ -292,10 +366,48 @@ def _compute_reward_term(term_name: str, params: dict[str, Any], state: MujocoRe
             ref_root_pos_w=_required_state_tensor(state, "ref_root_pos_w"),
             ref_root_quat_w=_required_state_tensor(state, "ref_root_quat_w"),
         )
+    if term_name in ("keypoint_ori_tracking_product", "keypoint_orientation_tracking_product"):
+        return reward_parity.keypoint_orientation_tracking_product(
+            actual_body_quat_w=_required_state_tensor(state, "actual_body_quat_w"),
+            ref_body_quat_w=_required_state_tensor(state, "ref_body_quat_w"),
+            sigma=float(params.pop("sigma", 0.03)),
+            tolerance=params.pop("tolerance", 0.0),
+        )
+    if term_name in ("keypoint_ori_tracking_local_product", "keypoint_orientation_tracking_local_product"):
+        return reward_parity.keypoint_orientation_tracking_product(
+            actual_body_quat_w=_required_state_tensor(state, "actual_body_quat_w"),
+            ref_body_quat_w=_required_state_tensor(state, "ref_body_quat_w"),
+            sigma=float(params.pop("sigma", 0.03)),
+            tolerance=params.pop("tolerance", 0.0),
+            local=True,
+            root_quat_w=_required_state_tensor(state, "root_quat_w"),
+            ref_root_quat_w=_required_state_tensor(state, "ref_root_quat_w"),
+        )
+    if term_name == "keypoint_lin_vel_tracking_product":
+        return reward_parity.keypoint_velocity_tracking_product(
+            actual_body_vel_w=_required_state_tensor(state, "actual_body_lin_vel_w"),
+            ref_body_vel_w=_required_state_tensor(state, "ref_body_lin_vel_w"),
+            sigma=float(params.pop("sigma", 0.03)),
+            tolerance=params.pop("tolerance", 0.0),
+        )
+    if term_name == "keypoint_ang_vel_tracking_product":
+        return reward_parity.keypoint_velocity_tracking_product(
+            actual_body_vel_w=_required_state_tensor(state, "actual_body_ang_vel_w"),
+            ref_body_vel_w=_required_state_tensor(state, "ref_body_ang_vel_w"),
+            sigma=float(params.pop("sigma", 0.03)),
+            tolerance=params.pop("tolerance", 0.0),
+        )
     if term_name in ("joint_pos_tracking_product", "joint_position_tracking_product"):
         return reward_parity.joint_position_tracking_product(
             joint_pos=_required_state_tensor(state, "joint_pos"),
             ref_joint_pos=_required_state_tensor(state, "ref_joint_pos"),
+            sigma=float(params.pop("sigma", 0.03)),
+            tolerance=params.pop("tolerance", 0.0),
+        )
+    if term_name in ("joint_vel_tracking_product", "joint_velocity_tracking_product"):
+        return reward_parity.joint_velocity_tracking_product(
+            joint_vel=_required_state_tensor(state, "joint_vel"),
+            ref_joint_vel=_required_state_tensor(state, "ref_joint_vel"),
             sigma=float(params.pop("sigma", 0.03)),
             tolerance=params.pop("tolerance", 0.0),
         )
@@ -421,8 +533,9 @@ def _write_reference_frame_to_scene(
     robot.write_root_link_pose_to_sim(root_pose)
 
     ref_joint_pos = _reference_joint_pos(reference, step)
+    ref_joint_vel = _reference_joint_vel(reference, step)
     robot_pairs = _reference_to_asset_joint_pairs(reference.requested_joint_names, robot.joint_names)
-    _write_asset_joint_pairs(robot, ref_joint_pos, robot_pairs)
+    _write_asset_joint_pairs(robot, ref_joint_pos, ref_joint_vel, robot_pairs)
 
     if object_view is not None:
         if object_body_name is not None and object_body_name in reference.body_names:
@@ -436,18 +549,24 @@ def _write_reference_frame_to_scene(
             object_view.write_root_link_pose_to_sim(object_pose)
 
         object_pairs = _reference_to_asset_joint_pairs(reference.requested_joint_names, object_view.joint_names)
-        _write_asset_joint_pairs(object_view, ref_joint_pos, object_pairs)
+        _write_asset_joint_pairs(object_view, ref_joint_pos, ref_joint_vel, object_pairs)
     scene.update(0.0)
 
 
-def _write_asset_joint_pairs(asset: Any, ref_joint_pos: torch.Tensor, pairs: list[tuple[int, int]]) -> None:
+def _write_asset_joint_pairs(
+    asset: Any,
+    ref_joint_pos: torch.Tensor,
+    ref_joint_vel: torch.Tensor,
+    pairs: list[tuple[int, int]],
+) -> None:
     if not pairs:
         return
     ref_columns, asset_joint_ids = zip(*pairs, strict=True)
     joint_pos = ref_joint_pos[list(ref_columns)].unsqueeze(0).expand(asset.num_instances, -1)
+    joint_vel = ref_joint_vel[list(ref_columns)].unsqueeze(0).expand(asset.num_instances, -1)
     asset.write_joint_state_to_sim(
         joint_pos,
-        torch.zeros_like(joint_pos),
+        joint_vel,
         joint_ids=list(asset_joint_ids),
     )
 
@@ -458,6 +577,31 @@ def _reference_joint_pos(reference: Any, step: int) -> torch.Tensor:
 
 def _reference_body_pos_w(reference: Any, step: int) -> torch.Tensor:
     return reference.body_pos_w[step, reference.body_indices]
+
+
+def _reference_body_quat_w(reference: Any, step: int) -> torch.Tensor:
+    return reference.body_quat_w[step, reference.body_indices]
+
+
+def _reference_body_lin_vel_w(reference: Any, step: int) -> torch.Tensor:
+    body_lin_vel_w = getattr(reference, "body_lin_vel_w", None)
+    if body_lin_vel_w is None:
+        return torch.zeros_like(reference.body_pos_w[step, reference.body_indices])
+    return body_lin_vel_w[step, reference.body_indices]
+
+
+def _reference_body_ang_vel_w(reference: Any, step: int) -> torch.Tensor:
+    body_ang_vel_w = getattr(reference, "body_ang_vel_w", None)
+    if body_ang_vel_w is None:
+        return torch.zeros_like(reference.body_pos_w[step, reference.body_indices])
+    return body_ang_vel_w[step, reference.body_indices]
+
+
+def _reference_joint_vel(reference: Any, step: int) -> torch.Tensor:
+    joint_vel = getattr(reference, "joint_vel", None)
+    if joint_vel is None:
+        return torch.zeros_like(reference.joint_pos[step, reference.joint_indices])
+    return joint_vel[step, reference.joint_indices]
 
 
 def _expand_reference_frame(frame: torch.Tensor, num_envs: int) -> torch.Tensor:
@@ -478,15 +622,52 @@ def _gather_scene_joint_pos(robot: Any, joint_names: Sequence[str], object_view:
     return torch.stack(columns, dim=1)
 
 
+def _gather_scene_joint_vel(robot: Any, joint_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
+    robot_index = _name_to_index(robot.joint_names)
+    object_index = _name_to_index(object_view.joint_names) if object_view is not None else {}
+    columns = []
+    for joint_name in joint_names:
+        if joint_name in robot_index:
+            columns.append(robot.data.joint_vel[:, robot_index[joint_name]])
+        elif object_view is not None and joint_name in object_index:
+            columns.append(object_view.data.joint_vel[:, object_index[joint_name]])
+        else:
+            raise ValueError(f"missing playback joint name in MuJoCo scene: {joint_name!r}.")
+    return torch.stack(columns, dim=1)
+
+
 def _gather_scene_body_pos_w(robot: Any, body_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
+    return _gather_scene_body_tensor(robot, body_names, object_view, "body_link_pos_w")
+
+
+def _gather_scene_body_quat_w(robot: Any, body_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
+    return _gather_scene_body_tensor(robot, body_names, object_view, "body_link_quat_w")
+
+
+def _gather_scene_body_lin_vel_w(robot: Any, body_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
+    return _gather_scene_body_tensor(robot, body_names, object_view, "body_com_lin_vel_w")
+
+
+def _gather_scene_body_ang_vel_w(robot: Any, body_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
+    return _gather_scene_body_tensor(robot, body_names, object_view, "body_com_ang_vel_w")
+
+
+def _gather_scene_body_tensor(
+    robot: Any,
+    body_names: Sequence[str],
+    object_view: Any | None,
+    tensor_name: str,
+) -> torch.Tensor:
     robot_index = _name_to_index(robot.body_names)
     object_index = _name_to_index(object_view.body_names) if object_view is not None else {}
+    robot_tensor = getattr(robot.data, tensor_name)
+    object_tensor = getattr(object_view.data, tensor_name) if object_view is not None else None
     columns = []
     for body_name in body_names:
         if body_name in robot_index:
-            columns.append(robot.data.body_link_pos_w[:, robot_index[body_name]])
+            columns.append(robot_tensor[:, robot_index[body_name]])
         elif object_view is not None and body_name in object_index:
-            columns.append(object_view.data.body_link_pos_w[:, object_index[body_name]])
+            columns.append(object_tensor[:, object_index[body_name]])
         else:
             raise ValueError(f"missing playback body name in MuJoCo scene: {body_name!r}.")
     return torch.stack(columns, dim=1)
@@ -500,8 +681,16 @@ def _build_kinematic_reward_state(
     step: int,
     actual_body_pos_w: torch.Tensor,
     ref_body_pos_w: torch.Tensor,
+    actual_body_quat_w: torch.Tensor,
+    ref_body_quat_w: torch.Tensor,
+    actual_body_lin_vel_w: torch.Tensor,
+    ref_body_lin_vel_w: torch.Tensor,
+    actual_body_ang_vel_w: torch.Tensor,
+    ref_body_ang_vel_w: torch.Tensor,
     actual_joint_pos: torch.Tensor,
     ref_joint_pos: torch.Tensor,
+    actual_joint_vel: torch.Tensor,
+    ref_joint_vel: torch.Tensor,
     object_body_name: str | None,
     object_joint_name: str | None,
 ) -> MujocoRewardState:
@@ -546,12 +735,20 @@ def _build_kinematic_reward_state(
     return MujocoRewardState(
         actual_body_pos_w=actual_body_pos_w,
         ref_body_pos_w=ref_body_pos_w,
+        actual_body_quat_w=actual_body_quat_w,
+        ref_body_quat_w=ref_body_quat_w,
+        actual_body_lin_vel_w=actual_body_lin_vel_w,
+        ref_body_lin_vel_w=ref_body_lin_vel_w,
+        actual_body_ang_vel_w=actual_body_ang_vel_w,
+        ref_body_ang_vel_w=ref_body_ang_vel_w,
         root_pos_w=robot.data.root_link_pos_w,
         root_quat_w=robot.data.root_link_quat_w,
         ref_root_pos_w=ref_root_pos_w,
         ref_root_quat_w=ref_root_quat_w,
         joint_pos=actual_joint_pos,
         ref_joint_pos=ref_joint_pos,
+        joint_vel=actual_joint_vel,
+        ref_joint_vel=ref_joint_vel,
         object_pos_w=object_pos_w,
         ref_object_pos_w=ref_object_pos_w,
         object_quat_w=object_quat_w,

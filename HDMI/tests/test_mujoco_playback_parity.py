@@ -132,6 +132,47 @@ def test_reward_from_spec_matches_hdmi_group_sum_and_aliases():
     assert torch.allclose(metrics.reward, expected)
 
 
+def test_reward_from_spec_supports_velocity_and_orientation_tracking_terms():
+    state = playback_parity.MujocoRewardState(
+        actual_body_quat_w=torch.tensor(
+            [
+                [[1.0, 0.0, 0.0, 0.0]],
+                [[2**-0.5, 0.0, 0.0, 2**-0.5]],
+            ]
+        ),
+        ref_body_quat_w=torch.tensor(
+            [
+                [[2**-0.5, 0.0, 0.0, 2**-0.5]],
+                [[2**-0.5, 0.0, 0.0, 2**-0.5]],
+            ]
+        ),
+        actual_body_lin_vel_w=torch.tensor([[[0.0, 0.0, 0.0]], [[1.0, 0.0, 0.0]]]),
+        ref_body_lin_vel_w=torch.tensor([[[0.3, 0.4, 0.0]], [[1.0, 0.0, 0.0]]]),
+        actual_body_ang_vel_w=torch.tensor([[[0.0, 0.0, 0.0]], [[0.0, 2.0, 0.0]]]),
+        ref_body_ang_vel_w=torch.tensor([[[0.0, 0.0, 0.2]], [[0.0, 1.5, 0.0]]]),
+        joint_vel=torch.tensor([[0.0, 1.0], [2.0, 3.0]]),
+        ref_joint_vel=torch.tensor([[0.5, 1.0], [1.0, 3.2]]),
+    )
+    reward_cfg = {
+        "tracking": {
+            "body_ori(keypoint_ori_tracking_product)": {"weight": 0.5, "sigma": 0.25},
+            "body_lin_vel(keypoint_lin_vel_tracking_product)": {"weight": 2.0, "sigma": 0.5},
+            "body_ang_vel(keypoint_ang_vel_tracking_product)": {"weight": 3.0, "sigma": 0.5},
+            "joint_vel_tracking_product": {"weight": 4.0, "sigma": 0.25},
+        }
+    }
+
+    reward = playback_parity.compute_reward_from_spec(reward_cfg, state)
+
+    ori_error = torch.tensor([torch.pi / 2, 0.0])
+    ori = torch.exp(-ori_error / 0.25).unsqueeze(1)
+    lin = torch.exp(-torch.tensor([0.5, 0.0]) / 0.5).unsqueeze(1)
+    ang = torch.exp(-torch.tensor([0.2, 0.5]) / 0.5).unsqueeze(1)
+    joint = torch.exp(-torch.tensor([0.25, 0.6]) / 0.25).unsqueeze(1)
+    expected = 0.5 * ori + 2.0 * lin + 3.0 * ang + 4.0 * joint
+    assert torch.allclose(reward, expected, atol=1e-6)
+
+
 def test_reward_from_spec_matches_hdmi_multiplicative_group():
     state = playback_parity.MujocoRewardState(
         object_pos_w=torch.tensor([[0.0, 0.0, 0.0]]),

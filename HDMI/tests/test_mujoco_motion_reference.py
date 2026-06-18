@@ -36,11 +36,11 @@ def _write_motion(tmp_path):
     (tmp_path / "meta.json").write_text(
         json.dumps({"body_names": body_names, "joint_names": joint_names, "fps": 50.0})
     )
-    return body_pos_w, body_quat_w, joint_pos
+    return body_pos_w, body_quat_w, body_lin_vel_w, body_ang_vel_w, joint_pos, joint_vel
 
 
 def test_motion_reference_slices_future_frames_in_exported_name_order(tmp_path):
-    body_pos_w, body_quat_w, joint_pos = _write_motion(tmp_path)
+    body_pos_w, body_quat_w, body_lin_vel_w, body_ang_vel_w, joint_pos, joint_vel = _write_motion(tmp_path)
     reference = MujocoMotionReference.from_motion_dir(
         tmp_path,
         body_names=["pelvis", "hand_link"],
@@ -67,6 +67,18 @@ def test_motion_reference_slices_future_frames_in_exported_name_order(tmp_path):
     assert torch.allclose(
         fields.ref_joint_pos_future,
         torch.as_tensor(joint_pos[expected_indices][:, [1, 0]][None], dtype=torch.float32),
+    )
+    assert torch.allclose(
+        reference.body_lin_vel_w[expected_indices][:, reference.body_indices],
+        torch.as_tensor(body_lin_vel_w[expected_indices][:, [1, 0]], dtype=torch.float32),
+    )
+    assert torch.allclose(
+        reference.body_ang_vel_w[expected_indices][:, reference.body_indices],
+        torch.as_tensor(body_ang_vel_w[expected_indices][:, [1, 0]], dtype=torch.float32),
+    )
+    assert torch.allclose(
+        reference.joint_vel[expected_indices][:, reference.joint_indices],
+        torch.as_tensor(joint_vel[expected_indices][:, [1, 0]], dtype=torch.float32),
     )
     assert torch.equal(fields.motion_t, torch.tensor([2]))
     assert torch.equal(fields.motion_len, torch.tensor([5]))
