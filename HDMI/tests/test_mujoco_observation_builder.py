@@ -229,3 +229,29 @@ def test_command_group_builds_contact_observations_in_robot_root_frame():
         ]]
     )
     assert torch.allclose(obs, expected, atol=1e-6)
+
+
+def test_object_group_builds_object_pose_in_robot_root_frame():
+    cfg = {
+        "object": {
+            "object_xy_b": {},
+            "object_heading_b": {},
+        }
+    }
+    builder = MujocoObservationBuilder(cfg, policy_joint_names=["j0"])
+    sqrt_half = 2 ** -0.5
+    state = _state(
+        root=[[0.0, 0.0, 0.0]],
+        gravity=[[0.0, 0.0, -1.0]],
+        joint=[[0.0]],
+        robot_root_pos_w=[[1.0, 1.0, 0.0]],
+        robot_root_quat_w=[[sqrt_half, 0.0, 0.0, sqrt_half]],
+        object_pos_w=[[1.0, 2.0, 0.5]],
+        object_quat_w=[[0.0, 0.0, 0.0, 1.0]],
+    )
+
+    obs = builder.build_group("object", state)
+
+    expected = torch.tensor([[1.0, 0.0, 0.0, 1.0]])
+    assert torch.allclose(obs, expected, atol=1e-6)
+    assert builder.group_dim("object") == 4

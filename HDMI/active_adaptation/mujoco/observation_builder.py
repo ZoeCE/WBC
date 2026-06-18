@@ -23,6 +23,8 @@ class MujocoPolicyState:
     robot_root_quat_w: torch.Tensor | None = None
     contact_target_pos_w: torch.Tensor | None = None
     contact_eef_pos_w: torch.Tensor | None = None
+    object_pos_w: torch.Tensor | None = None
+    object_quat_w: torch.Tensor | None = None
 
 
 class MujocoObservationBuilder:
@@ -116,6 +118,10 @@ class MujocoObservationBuilder:
             return _ref_contact_pos_b(state, yaw_only=bool(params.get("yaw_only", False)))
         if obs_key == "diff_contact_pos_b":
             return _diff_contact_pos_b(state)
+        if obs_key == "object_xy_b":
+            return _object_xy_b(state)
+        if obs_key == "object_heading_b":
+            return _object_heading_b(state)
         if obs_key == "prev_actions":
             return self._prev_actions(params, state)
         if obs_key == "applied_action":
@@ -205,6 +211,21 @@ def _diff_contact_pos_b(state: MujocoPolicyState) -> torch.Tensor:
     return diff_contact_pos_b.reshape(diff_contact_pos_b.shape[0], -1)
 
 
+def _object_xy_b(state: MujocoPolicyState) -> torch.Tensor:
+    object_pos_w = _required_tensor(state, "object_pos_w")
+    robot_root_pos_w = _required_tensor(state, "robot_root_pos_w")
+    robot_root_quat_w = _yaw_quat(_required_tensor(state, "robot_root_quat_w"))
+    object_pos_b = _quat_rotate_inverse(robot_root_quat_w, object_pos_w - robot_root_pos_w)
+    return object_pos_b[:, :2]
+
+
+def _object_heading_b(state: MujocoPolicyState) -> torch.Tensor:
+    object_quat_w = _required_tensor(state, "object_quat_w")
+    robot_root_quat_w = _required_tensor(state, "robot_root_quat_w")
+    object_yaw_b = _wrap_to_pi(_yaw_from_quat(object_quat_w) - _yaw_from_quat(robot_root_quat_w))
+    return torch.stack((torch.cos(object_yaw_b), torch.sin(object_yaw_b)), dim=-1)
+
+
 def _ref_motion_phase(state: MujocoPolicyState) -> torch.Tensor:
     motion_t = _required_tensor(state, "motion_t")
     motion_len = _required_tensor(state, "motion_len")
@@ -220,6 +241,15 @@ def _yaw_quat(quat: torch.Tensor) -> torch.Tensor:
     yaw = torch.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
     zeros = torch.zeros_like(yaw)
     return torch.stack((torch.cos(yaw / 2), zeros, zeros, torch.sin(yaw / 2)), dim=-1)
+
+
+def _yaw_from_quat(quat: torch.Tensor) -> torch.Tensor:
+    qw, qx, qy, qz = torch.unbind(quat, dim=-1)
+    return torch.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+
+
+def _wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
+    return torch.atan2(torch.sin(angle), torch.cos(angle))
 
 
 def _quat_rotate_inverse(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
