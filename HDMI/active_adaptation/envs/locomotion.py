@@ -236,7 +236,9 @@ class SimpleEnv(_Env):
                 robot = ROBOTS[self.cfg.robot.name]
                 contact_forces = "robot"
             
-            self.scene = MJScene(SceneCfg())
+            env_spacing = self.cfg.viewer.get("env_spacing", 0.0)
+            launch_viewer = not bool(getattr(self.cfg, "headless", True))
+            self.scene = MJScene(SceneCfg(), num_envs=self.cfg.num_envs, launch_viewer=launch_viewer, env_spacing=env_spacing)
             self.sim = MJSim(self.scene)
 
         
