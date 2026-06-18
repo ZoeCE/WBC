@@ -214,6 +214,51 @@ def test_policy_rollout_steps_mujoco_scene_and_reports_parity(tmp_path):
     assert torch.allclose(metrics.action_rate_l2, torch.zeros_like(metrics.action_rate_l2))
 
 
+def test_policy_rollout_computes_closed_loop_reward_from_spec(tmp_path):
+    module = importlib.import_module("active_adaptation.envs.mujoco")
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS.with_object("g1_29dof", object_asset_name="door")
+
+    scene = module.MJScene(SceneCfg(), num_envs=1, launch_viewer=False)
+    robot = scene["robot"]
+    door = scene["door"]
+    body_names = [robot.body_names[0], door.body_names[0]]
+    joint_name = robot.joint_names[0]
+    motion_dir = tmp_path / "motion-rollout-reward"
+    _write_motion_dir(motion_dir, body_names, [joint_name])
+    reference = MujocoMotionReference.from_motion_dir(
+        motion_dir=motion_dir,
+        body_names=body_names,
+        joint_names=[joint_name],
+        root_body_name=robot.body_names[0],
+        future_steps=[0],
+    )
+    policy_bundle = _write_zero_policy_bundle(tmp_path, joint_name)
+    reward_cfg = {
+        "loco": {
+            "survival": {
+                "weight": 1.0,
+                "enabled": True,
+            }
+        }
+    }
+
+    metrics = run_mujoco_policy_rollout(
+        scene=scene,
+        policy_bundle=policy_bundle,
+        reference=reference,
+        reward_cfg=reward_cfg,
+        steps=[0, 1],
+        decimation=1,
+    )
+
+    assert metrics.reward is not None
+    assert metrics.reward.shape == (2, 1, 1)
+    assert torch.allclose(metrics.reward, torch.ones_like(metrics.reward))
+
+
 def test_policy_rollout_fills_object_observations_from_mujoco_scene(tmp_path):
     module = importlib.import_module("active_adaptation.envs.mujoco")
     from active_adaptation.assets_mjcf import ROBOTS

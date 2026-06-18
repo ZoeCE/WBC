@@ -161,6 +161,13 @@ def run_parity(
                     policy_bundle=MujocoPolicyBundle.load(policy_path),
                     reference=policy_reference,
                     steps=steps,
+                    reward_cfg=reward_config,
+                    object_name=object_name,
+                    object_body_name=object_body_name,
+                    object_joint_name=object_joint_name,
+                    contact_eef_body_names=contact_eef_body_names,
+                    contact_target_pos_offset=contact_target_pos_offset,
+                    contact_eef_pos_offset=contact_eef_pos_offset,
                 )
             )
         )
@@ -193,7 +200,7 @@ def summarize_metrics(
 
 
 def summarize_policy_rollout_metrics(metrics: MujocoPolicyRolloutMetrics) -> dict[str, Any]:
-    return {
+    summary = {
         "policy_rollout_q_l2_shape": list(metrics.q_l2.shape),
         "policy_rollout_q_l2_max": float(metrics.q_l2.max().item()),
         "policy_rollout_body_pos_l2_shape": list(metrics.body_pos_l2.shape),
@@ -203,7 +210,13 @@ def summarize_policy_rollout_metrics(metrics: MujocoPolicyRolloutMetrics) -> dic
         "policy_rollout_action_rate_l2_shape": list(metrics.action_rate_l2.shape),
         "policy_rollout_action_rate_l2_max": float(metrics.action_rate_l2.max().item()),
         "policy_rollout_action_rate_l2_mean": float(metrics.action_rate_l2.mean().item()),
+        "policy_rollout_reward_shape": None,
+        "policy_rollout_reward_mean": None,
     }
+    if metrics.reward is not None:
+        summary["policy_rollout_reward_shape"] = list(metrics.reward.shape)
+        summary["policy_rollout_reward_mean"] = float(metrics.reward.mean().item())
+    return summary
 
 
 def main(argv: Sequence[str] | None = None) -> int:

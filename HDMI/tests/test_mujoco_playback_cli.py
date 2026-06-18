@@ -601,6 +601,8 @@ def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path,
     object_body_name, object_joint_name = _write_motion_dir(tmp_path)
     joint_name = json.loads((tmp_path / "meta.json").read_text())["joint_names"][0]
     policy_path = _write_rollout_policy_bundle(tmp_path, joint_name)
+    reward_cfg_path = tmp_path / "rollout-reward.json"
+    reward_cfg_path.write_text(json.dumps({"loco": {"survival": {"weight": 1.0}}}))
     script = _load_cli_module()
 
     exit_code = script.main(
@@ -616,6 +618,8 @@ def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path,
             "--policy-path",
             str(policy_path),
             "--policy-rollout",
+            "--reward-config-json",
+            str(reward_cfg_path),
             "--steps",
             "0,1",
         ]
@@ -632,6 +636,8 @@ def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path,
     assert summary["policy_rollout_body_pos_l2_max"] >= 0.0
     assert summary["policy_rollout_action_rate_l2_shape"] == [2, 1, 1]
     assert summary["policy_rollout_action_rate_l2_max"] >= 0.0
+    assert summary["policy_rollout_reward_shape"] == [2, 1, 1]
+    assert summary["policy_rollout_reward_mean"] == 1.0
 
 
 def test_mujoco_playback_parity_cli_fills_object_policy_observations_from_reference(tmp_path, capsys):

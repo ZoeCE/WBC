@@ -760,7 +760,7 @@ def _scene_object_views(scene: Any, primary_object_view: Any | None) -> tuple[An
     for candidate in getattr(scene, "_object_views", ()):
         if candidate is None:
             continue
-        if all(candidate is existing for existing in object_views):
+        if any(candidate is existing for existing in object_views):
             continue
         object_views.append(candidate)
     return tuple(object_views)
@@ -1029,6 +1029,7 @@ def _build_kinematic_reward_state(
     contact_eef_body_names: Sequence[str] | None,
     contact_target_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None,
     contact_eef_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None,
+    action_buf: torch.Tensor | None = None,
 ) -> MujocoRewardState:
     ref_root_pos_w = _expand_reference_frame(reference.body_pos_w[step, reference.root_body_index], robot.num_instances)
     ref_root_quat_w = _expand_reference_frame(
@@ -1052,13 +1053,14 @@ def _build_kinematic_reward_state(
         object_view=object_view,
     )
     joint_effort_limits = _gather_scene_joint_effort_limits(robot, reference.requested_joint_names, object_view)
-    action_buf = torch.zeros(
-        robot.num_instances,
-        robot.data.joint_pos.shape[1],
-        2,
-        dtype=actual_joint_pos.dtype,
-        device=actual_joint_pos.device,
-    )
+    if action_buf is None:
+        action_buf = torch.zeros(
+            robot.num_instances,
+            robot.data.joint_pos.shape[1],
+            2,
+            dtype=actual_joint_pos.dtype,
+            device=actual_joint_pos.device,
+        )
     if object_view is not None:
         object_body_index = 0
         if object_body_name is not None and object_body_name in object_view.body_names:

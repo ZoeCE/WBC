@@ -7,7 +7,25 @@ from .motion_reference import MujocoMotionReference
 from .observation_builder import MujocoPolicyState
 from .policy import MujocoPolicyAction, MujocoPolicyBundle
 from . import reward_parity
-from .playback_parity import compute_playback_parity
+from .playback_parity import (
+    _build_kinematic_reward_state,
+    _expand_reference_frame,
+    _gather_scene_body_ang_vel_w,
+    _gather_scene_body_lin_vel_w,
+    _gather_scene_body_quat_w,
+    _gather_scene_joint_pos,
+    _gather_scene_joint_pos_limits,
+    _gather_scene_joint_vel,
+    _reference_body_ang_vel_w as _reference_frame_body_ang_vel_w,
+    _reference_body_lin_vel_w as _reference_frame_body_lin_vel_w,
+    _reference_body_quat_w as _reference_frame_body_quat_w,
+    _reference_joint_pos as _reference_frame_joint_pos,
+    _reference_joint_vel as _reference_frame_joint_vel,
+    _scene_object_views,
+    _scene_optional_asset,
+    compute_playback_parity,
+    compute_reward_from_spec,
+)
 
 _OBJECT_POSE_OBS_KEYS = ("object_xy_b", "object_heading_b", "object_pos_b", "object_ori_b")
 
@@ -19,6 +37,7 @@ class MujocoPolicyRolloutMetrics:
     actions: torch.Tensor
     joint_position_targets: torch.Tensor
     action_rate_l2: torch.Tensor
+    reward: torch.Tensor | None = None
 
 
 def run_mujoco_policy_rollout(
@@ -28,6 +47,13 @@ def run_mujoco_policy_rollout(
     reference: MujocoMotionReference,
     steps: Sequence[int] | torch.Tensor | None = None,
     decimation: int = 1,
+    reward_cfg: Mapping[str, Any] | None = None,
+    object_name: str | None = None,
+    object_body_name: str | None = None,
+    object_joint_name: str | None = None,
+    contact_eef_body_names: Sequence[str] | None = None,
+    contact_target_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None = None,
+    contact_eef_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None = None,
 ) -> MujocoPolicyRolloutMetrics:
     if decimation < 1:
         raise ValueError(f"decimation must be >= 1, got {decimation}.")
@@ -38,6 +64,8 @@ def run_mujoco_policy_rollout(
     robot = scene["robot"]
     if robot is None:
         raise KeyError("MuJoCo scene does not contain a 'robot' articulation.")
+    primary_object_view = _scene_optional_asset(scene, object_name)
+    object_views = _policy_scene_object_views(scene, robot, primary_object_view)
 
     policy_joint_ids = _ordered_joint_ids(robot, policy_bundle.policy_joint_names, label="Policy joint")
     observation_joint_ids = _ordered_joint_ids(
@@ -70,6 +98,7 @@ def run_mujoco_policy_rollout(
     q_l2: list[torch.Tensor] = []
     body_pos_l2: list[torch.Tensor] = []
     action_rate_l2: list[torch.Tensor] = []
+    rewards: list[torch.Tensor] = []
 
     for rollout_index, step_t in enumerate(steps_t):
         step = int(step_t.item())
@@ -110,6 +139,26 @@ def run_mujoco_policy_rollout(
         action_rate_l2.append(
             reward_parity.action_rate_l2(action_buf).detach().cpu()
         )
+        if reward_cfg is not None:
+            reward = _policy_rollout_reward_from_scene(
+                scene=scene,
+                robot=robot,
+                reference=reference,
+                step=step,
+                reward_cfg=reward_cfg,
+                actual_body_pos_w=current_body_pos_w,
+                ref_body_pos_w=ref_body_pos_w,
+                action_buf=action_buf,
+                primary_object_view=primary_object_view,
+                object_views=object_views,
+                object_name=object_name,
+                object_body_name=object_body_name,
+                object_joint_name=object_joint_name,
+                contact_eef_body_names=contact_eef_body_names,
+                contact_target_pos_offset=contact_target_pos_offset,
+                contact_eef_pos_offset=contact_eef_pos_offset,
+            )
+            rewards.append(reward.detach().cpu())
 
         applied_action = action.raw_action.detach()
         action_history = action_history.roll(1, dims=2)
@@ -121,7 +170,103 @@ def run_mujoco_policy_rollout(
         actions=torch.stack(actions),
         joint_position_targets=torch.stack(joint_targets),
         action_rate_l2=torch.stack(action_rate_l2),
+        reward=torch.stack(rewards) if rewards else None,
     )
+
+
+def _policy_scene_object_views(scene: Any, robot: Any, primary_object_view: Any | None) -> tuple[Any, ...]:
+    object_views = list(_scene_object_views(scene, primary_object_view))
+    for candidate in (*getattr(scene, "articulations", {}).values(), *getattr(scene, "rigid_objects", {}).values()):
+        if candidate is None or candidate is robot:
+            continue
+        if any(candidate is existing for existing in object_views):
+            continue
+        object_views.append(candidate)
+    return tuple(object_views)
+
+
+def _policy_rollout_reward_from_scene(
+    *,
+    scene: Any,
+    robot: Any,
+    reference: MujocoMotionReference,
+    step: int,
+    reward_cfg: Mapping[str, Any],
+    actual_body_pos_w: torch.Tensor,
+    ref_body_pos_w: torch.Tensor,
+    action_buf: torch.Tensor,
+    primary_object_view: Any | None,
+    object_views: Any | None,
+    object_name: str | None,
+    object_body_name: str | None,
+    object_joint_name: str | None,
+    contact_eef_body_names: Sequence[str] | None,
+    contact_target_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None,
+    contact_eef_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None,
+) -> torch.Tensor:
+    actual_body_quat_w = _gather_scene_body_quat_w(
+        robot=robot,
+        body_names=reference.requested_body_names,
+        object_view=object_views,
+    )
+    actual_body_lin_vel_w = _gather_scene_body_lin_vel_w(
+        robot=robot,
+        body_names=reference.requested_body_names,
+        object_view=object_views,
+    )
+    actual_body_ang_vel_w = _gather_scene_body_ang_vel_w(
+        robot=robot,
+        body_names=reference.requested_body_names,
+        object_view=object_views,
+    )
+    actual_joint_pos = _gather_scene_joint_pos(
+        robot=robot,
+        joint_names=reference.requested_joint_names,
+        object_view=object_views,
+    )
+    actual_joint_vel = _gather_scene_joint_vel(
+        robot=robot,
+        joint_names=reference.requested_joint_names,
+        object_view=object_views,
+    )
+    actual_joint_pos_limits = _gather_scene_joint_pos_limits(
+        robot=robot,
+        joint_names=reference.requested_joint_names,
+        object_view=object_views,
+    )
+    ref_body_quat_w = _expand_reference_frame(_reference_frame_body_quat_w(reference, step), scene.num_envs)
+    ref_body_lin_vel_w = _expand_reference_frame(_reference_frame_body_lin_vel_w(reference, step), scene.num_envs)
+    ref_body_ang_vel_w = _expand_reference_frame(_reference_frame_body_ang_vel_w(reference, step), scene.num_envs)
+    ref_joint_pos = _expand_reference_frame(_reference_frame_joint_pos(reference, step), scene.num_envs)
+    ref_joint_vel = _expand_reference_frame(_reference_frame_joint_vel(reference, step), scene.num_envs)
+    reward_state = _build_kinematic_reward_state(
+        scene=scene,
+        robot=robot,
+        object_view=primary_object_view,
+        reference=reference,
+        step=step,
+        actual_body_pos_w=actual_body_pos_w,
+        ref_body_pos_w=ref_body_pos_w,
+        actual_body_quat_w=actual_body_quat_w,
+        ref_body_quat_w=ref_body_quat_w,
+        actual_body_lin_vel_w=actual_body_lin_vel_w,
+        ref_body_lin_vel_w=ref_body_lin_vel_w,
+        actual_body_ang_vel_w=actual_body_ang_vel_w,
+        ref_body_ang_vel_w=ref_body_ang_vel_w,
+        actual_joint_pos=actual_joint_pos,
+        ref_joint_pos=ref_joint_pos,
+        actual_joint_vel=actual_joint_vel,
+        ref_joint_vel=ref_joint_vel,
+        actual_joint_pos_limits=actual_joint_pos_limits,
+        object_name=object_name,
+        object_body_name=object_body_name or object_name,
+        object_joint_name=object_joint_name,
+        contact_eef_body_names=contact_eef_body_names,
+        contact_target_pos_offset=contact_target_pos_offset,
+        contact_eef_pos_offset=contact_eef_pos_offset,
+        action_buf=action_buf,
+    )
+    return compute_reward_from_spec(reward_cfg, reward_state)
 
 
 def _ordered_joint_ids(robot: Any, joint_names_expected: Sequence[str], *, label: str) -> list[int]:
