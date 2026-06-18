@@ -763,8 +763,9 @@ def _write_reference_frame_to_scene(
     _write_asset_joint_pairs(robot, ref_joint_pos, ref_joint_vel, robot_pairs)
 
     if object_view is not None:
-        if object_body_name is not None and object_body_name in reference.body_names:
-            body_index = _name_index(reference.body_names, object_body_name, "body")
+        reference_object_body_name = _reference_object_body_name(reference, object_view, object_body_name)
+        if reference_object_body_name is not None:
+            body_index = _name_index(reference.body_names, reference_object_body_name, "body")
             object_pose = torch.cat(
                 [
                     reference.body_pos_w[step, body_index],
@@ -776,6 +777,17 @@ def _write_reference_frame_to_scene(
         object_pairs = _reference_to_asset_joint_pairs(reference.requested_joint_names, object_view.joint_names)
         _write_asset_joint_pairs(object_view, ref_joint_pos, ref_joint_vel, object_pairs)
     scene.update(0.0)
+
+
+def _reference_object_body_name(reference: Any, object_view: Any, preferred_body_name: str | None) -> str | None:
+    if preferred_body_name is not None and preferred_body_name in reference.body_names:
+        return preferred_body_name
+
+    for body_name in getattr(object_view, "body_names", ()):
+        if body_name in reference.body_names:
+            return body_name
+
+    return None
 
 
 def _write_asset_joint_pairs(
