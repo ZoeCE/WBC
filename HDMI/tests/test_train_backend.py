@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 from hydra import compose, initialize_config_dir
 import active_adaptation as aa
@@ -18,6 +19,16 @@ def _load_train_module():
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     spec = importlib.util.spec_from_file_location("train_script_for_backend_test", script_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_play_module():
+    script_path = ROOT / "scripts/play.py"
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    spec = importlib.util.spec_from_file_location("play_script_for_backend_test", script_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -51,6 +62,11 @@ def test_train_config_declares_backend_override_key():
     assert cfg["backend"] == "isaac"
 
 
+def test_play_config_declares_backend_override_key():
+    cfg = yaml.safe_load((ROOT / "cfg/play.yaml").read_text())
+    assert cfg["backend"] == "isaac"
+
+
 def test_mujoco_backend_sets_backend_without_launching_isaac_app():
     aa.set_backend("isaac")
     script = _load_train_module()
@@ -63,6 +79,58 @@ def test_mujoco_backend_sets_backend_without_launching_isaac_app():
         assert aa.get_backend() == "mujoco"
     finally:
         aa.set_backend("isaac")
+
+
+def test_play_mujoco_backend_sets_backend_without_launching_isaac_app():
+    aa.set_backend("isaac")
+    script = _load_play_module()
+    cfg = OmegaConf.create({"backend": "mujoco", "app": {"headless": True, "enable_cameras": False}})
+
+    try:
+        simulation_app = script._configure_backend_and_app(cfg)
+
+        assert simulation_app is None
+        assert aa.get_backend() == "mujoco"
+    finally:
+        aa.set_backend("isaac")
+
+
+def test_play_mujoco_asset_meta_uses_mjcf_cfg_without_isaac_assets_import():
+    script = _load_play_module()
+    robot_cfg = SimpleNamespace(
+        joint_names_isaac=["joint_a", "joint_b"],
+        body_names_isaac=["body_a"],
+        actuators={
+            "group": {
+                "stiffness": {"joint_a": 10.0, "joint_b": 20.0},
+                "damping": {"joint_a": 1.0, "joint_b": 2.0},
+            },
+        },
+        init_state={"joint_pos": {"joint_a": 0.1, "joint_b": -0.2}},
+    )
+    env = SimpleNamespace(scene={"robot": SimpleNamespace(cfg=robot_cfg)})
+
+    meta = script._get_policy_asset_meta(env)
+
+    assert meta == {
+        "joint_names_isaac": ["joint_a", "joint_b"],
+        "body_names_isaac": ["body_a"],
+        "actuators": robot_cfg.actuators,
+        "init_state": robot_cfg.init_state,
+    }
+
+
+def test_play_export_allows_policy_without_command_observation_group():
+    script = _load_play_module()
+
+    assert script._get_exported_command_observation_group({"policy": {"joint_pos_history": {}}}) is None
+
+
+def test_play_export_finds_command_observation_group_when_present():
+    script = _load_play_module()
+    command_group = {"ref_body_pos_future_local": {}}
+
+    assert script._get_exported_command_observation_group({"command": command_group}) is command_group
 
 
 def test_mujoco_backend_can_import_simple_env_without_isaac_app():

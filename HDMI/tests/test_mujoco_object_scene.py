@@ -125,6 +125,20 @@ def test_mj_scene_exposes_articulated_object_view_and_filtered_contact_sensor():
 
     assert torch.allclose(door.data.joint_pos, joint_pos)
     assert torch.allclose(door.data.joint_vel, joint_vel)
+    assert door.data.applied_torque.shape == (2, 1)
+    assert torch.allclose(door.data.applied_torque, torch.zeros(2, 1))
+
+    door._custom_friction = torch.tensor([2.0, 3.0])
+    door._custom_damping = torch.tensor([0.5, 1.0])
+    door.write_data_to_sim()
+
+    expected_torque = (
+        -torch.sign(joint_vel)
+        * (joint_vel.abs() > 0.01)
+        * door._custom_friction[:, None]
+        - joint_vel * door._custom_damping[:, None]
+    )
+    assert torch.allclose(door.data.applied_torque, expected_torque)
 
 
 def test_robot_root_pose_write_uses_robot_free_joint_when_object_precedes_robot():

@@ -8,11 +8,10 @@ import datetime
 import re
 from omegaconf import OmegaConf
 
-from isaaclab.app import AppLauncher
-
 from torchrl.envs.utils import set_exploration_type, ExplorationType
 from tensordict.nn import TensorDictSequential
 
+import active_adaptation as aa
 from active_adaptation.utils.export import export_onnx_optional
 from active_adaptation.utils.wandb import parse_checkpoint_path
 
@@ -22,8 +21,7 @@ def main(cfg):
     OmegaConf.resolve(cfg)
     OmegaConf.set_struct(cfg, False)
     
-    app_launcher = AppLauncher(cfg.app)
-    simulation_app = app_launcher.app
+    simulation_app = _configure_backend_and_app(cfg)
 
     from scripts.helpers import EpisodeStats, make_env_policy, ObsNorm, ObsOODDetector
     env, policy, vecnorm = make_env_policy(cfg)
@@ -90,8 +88,7 @@ def main(cfg):
         policy_config["action_scale"] = dict_cfg["task"]["action"]["action_scaling"]
 
         ## joint names and stiffness/damping
-        from active_adaptation.assets import get_asset_meta
-        asset_meta = get_asset_meta(env.scene["robot"])
+        asset_meta = _get_policy_asset_meta(env)
         policy_config["isaac_joint_names"] = asset_meta["joint_names_isaac"]
         joint_kp, joint_kd = {}, {}
         for actuator_name, actuator in asset_meta["actuators"].items():
@@ -130,8 +127,7 @@ def main(cfg):
 
         ## command
         command = env.command_manager
-        cmd_key = "command" if "command" in policy_config["observation"] else "command_"
-        command_obs = policy_config["observation"][cmd_key]
+        command_obs = _get_exported_command_observation_group(policy_config["observation"])
         if cfg.task.command._target_ == "active_adaptation.envs.mdp.commands.motion_tracking.command.MotionTrackingCommand":
             from active_adaptation.envs.mdp.commands.motion_tracking.command import MotionTrackingCommand
             command: MotionTrackingCommand
@@ -141,13 +137,14 @@ def main(cfg):
             tracking_keypoint_names = command.tracking_keypoint_names
             tracking_joint_names = command.tracking_joint_names
 
-            for obs_key in command_obs:
-                command_obs[obs_key]["motion_duration_second"] = motion_duration_second
-                command_obs[obs_key]["motion_path"] = cfg.task.command.data_path
-                command_obs[obs_key]["future_steps"] = future_steps
-                command_obs[obs_key]["body_names"] = tracking_keypoint_names
-                command_obs[obs_key]["joint_names"] = tracking_joint_names
-                command_obs[obs_key]["root_body_name"] = "pelvis"
+            if command_obs is not None:
+                for obs_key in command_obs:
+                    command_obs[obs_key]["motion_duration_second"] = motion_duration_second
+                    command_obs[obs_key]["motion_path"] = cfg.task.command.data_path
+                    command_obs[obs_key]["future_steps"] = future_steps
+                    command_obs[obs_key]["body_names"] = tracking_keypoint_names
+                    command_obs[obs_key]["joint_names"] = tracking_joint_names
+                    command_obs[obs_key]["root_body_name"] = "pelvis"
         elif cfg.task.command._target_ == "active_adaptation.envs.mdp.commands.hdmi.command.RobotTracking":
             from active_adaptation.envs.mdp.commands.hdmi.command import RobotTracking
             command: RobotTracking
@@ -161,13 +158,14 @@ def main(cfg):
             tracking_joint_names = command.tracking_joint_names
             root_body_name = command.root_body_name
 
-            for obs_key in command_obs:
-                command_obs[obs_key]["motion_duration_second"] = motion_duration_second
-                command_obs[obs_key]["motion_path"] = cfg.task.command.data_path
-                command_obs[obs_key]["future_steps"] = future_steps
-                command_obs[obs_key]["body_names"] = tracking_keypoint_names
-                command_obs[obs_key]["joint_names"] = tracking_joint_names
-                command_obs[obs_key]["root_body_name"] = root_body_name
+            if command_obs is not None:
+                for obs_key in command_obs:
+                    command_obs[obs_key]["motion_duration_second"] = motion_duration_second
+                    command_obs[obs_key]["motion_path"] = cfg.task.command.data_path
+                    command_obs[obs_key]["future_steps"] = future_steps
+                    command_obs[obs_key]["body_names"] = tracking_keypoint_names
+                    command_obs[obs_key]["joint_names"] = tracking_joint_names
+                    command_obs[obs_key]["root_body_name"] = root_body_name
         elif cfg.task.command._target_ == "active_adaptation.envs.mdp.commands.hdmi.command.RobotObjectTracking":
             from active_adaptation.envs.mdp.commands.hdmi.command import RobotObjectTracking
             command: RobotObjectTracking
@@ -181,13 +179,14 @@ def main(cfg):
             root_body_name = command.root_body_name
 
             # for motion observation
-            for obs_key in command_obs:
-                command_obs[obs_key]["motion_duration_second"] = motion_duration_second
-                command_obs[obs_key]["motion_path"] = cfg.task.command.data_path
-                command_obs[obs_key]["future_steps"] = future_steps
-                command_obs[obs_key]["body_names"] = tracking_keypoint_names
-                command_obs[obs_key]["joint_names"] = tracking_joint_names
-                command_obs[obs_key]["root_body_name"] = root_body_name
+            if command_obs is not None:
+                for obs_key in command_obs:
+                    command_obs[obs_key]["motion_duration_second"] = motion_duration_second
+                    command_obs[obs_key]["motion_path"] = cfg.task.command.data_path
+                    command_obs[obs_key]["future_steps"] = future_steps
+                    command_obs[obs_key]["body_names"] = tracking_keypoint_names
+                    command_obs[obs_key]["joint_names"] = tracking_joint_names
+                    command_obs[obs_key]["root_body_name"] = root_body_name
             
             object_asset_name = cfg.task.command.object_asset_name
             object_body_name = cfg.task.command.object_body_name
@@ -241,6 +240,9 @@ def main(cfg):
 
         if cfg.get("export_policy_exit", False):
             print("Policy export complete; exiting before playback.")
+            env.close()
+            if simulation_app is not None:
+                simulation_app.close()
             return
 
     stats_keys = [
@@ -267,7 +269,48 @@ def main(cfg):
                     print(k, torch.mean(v).item())
     
     env.close()
-    simulation_app.close()
+    if simulation_app is not None:
+        simulation_app.close()
+
+
+def _configure_backend_and_app(cfg):
+    backend = cfg.get("backend", aa.get_backend())
+    aa.set_backend(backend)
+    if backend == "mujoco":
+        return None
+
+    from isaaclab.app import AppLauncher
+
+    return AppLauncher(cfg.app).app
+
+
+def _get_policy_asset_meta(env):
+    robot = env.scene["robot"]
+    cfg = getattr(robot, "cfg", None)
+    if (
+        cfg is not None
+        and hasattr(cfg, "joint_names_isaac")
+        and hasattr(cfg, "body_names_isaac")
+        and hasattr(cfg, "actuators")
+        and hasattr(cfg, "init_state")
+    ):
+        return {
+            "joint_names_isaac": list(cfg.joint_names_isaac),
+            "body_names_isaac": list(cfg.body_names_isaac),
+            "actuators": cfg.actuators,
+            "init_state": cfg.init_state,
+        }
+
+    from active_adaptation.assets import get_asset_meta
+
+    return get_asset_meta(robot)
+
+
+def _get_exported_command_observation_group(observation_cfg):
+    for group_key in ("command", "command_"):
+        if group_key in observation_cfg:
+            return observation_cfg[group_key]
+    return None
 
 
 def _annotate_exported_observation_metadata(obs_cfg, env):

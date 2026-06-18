@@ -3,6 +3,7 @@ hydra:
     dir: ./outputs_play/${now:%Y-%m-%d}/${now:%H-%M-%S}-${task.name}-${algo.name}
 
 headless: false
+backend: isaac
 
 app:
   headless: ${..headless}

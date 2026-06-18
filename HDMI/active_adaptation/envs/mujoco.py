@@ -718,6 +718,7 @@ class MJObjectViewData:
     body_com_ang_vel_w: ArrayType = None
     joint_pos: ArrayType = None
     joint_vel: ArrayType = None
+    applied_torque: ArrayType = None
 
     @property
     def root_link_pos_w(self):
@@ -834,6 +835,7 @@ class MJObjectView:
             default_joint_vel=default_joint_vel,
             soft_joint_pos_limits=joint_pos_limits.expand(self.num_instances, -1, -1).clone(),
             soft_joint_vel_limits=joint_vel_limits.expand(self.num_instances, -1).clone(),
+            applied_torque=torch.zeros(self.num_instances, self.num_joints),
         )
         self._custom_friction = torch.zeros(self.num_instances, dtype=torch.float32)
         self._custom_damping = torch.zeros(self.num_instances, dtype=torch.float32)
@@ -1008,6 +1010,7 @@ class MJObjectView:
         joint_friction = -torch.sign(joint_vel) * (joint_vel.abs() > 0.01) * self._custom_friction[:, None]
         joint_damping = -joint_vel * self._custom_damping[:, None]
         torque = joint_friction + joint_damping
+        self._data.applied_torque = torque.float()
         torque_np = torque.detach().cpu().numpy()
 
         for env_id, data in enumerate(self.mj_datas):
