@@ -383,6 +383,40 @@ reward:
     assert summary["q_l2_max"] < 1e-5
 
 
+def test_mujoco_playback_parity_cli_reports_task_motion_body_mapping(tmp_path, capsys):
+    motion_dir = tmp_path / "data/motion/test_door"
+    reference_object_body_name, object_joint_name = _write_motion_dir(motion_dir)
+    task_yaml = tmp_path / "cfg/task/G1/hdmi/door.yaml"
+    task_yaml.parent.mkdir(parents=True)
+    task_yaml.write_text(
+        f"""
+command:
+  data_path: data/motion/test_door
+  root_body_name: pelvis
+  object_asset_name: door
+  object_body_name: door_panel
+  object_joint_name: {object_joint_name}
+reward:
+  object_tracking:
+    object_joint_pos_tracking: {{weight: 1.0, sigma: 0.25}}
+""".strip()
+    )
+    script = _load_cli_module()
+
+    exit_code = script.main(["--task-yaml", str(task_yaml), "--steps", "0,1"])
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["object_name"] == "door"
+    assert summary["object_body_name"] == "door_panel"
+    assert summary["task_object_body_name"] == "door_panel"
+    assert summary["reference_object_body_name"] == reference_object_body_name
+    assert summary["asset_object_body_names"] == ["door", "door_panel"]
+    assert summary["object_joint_name"] == object_joint_name
+    assert summary["q_l2_max"] < 1e-5
+    assert summary["body_pos_l2_max"] < 1e-5
+
+
 def test_mujoco_playback_parity_cli_uses_task_yaml_contact_reward(tmp_path, capsys):
     motion_dir = tmp_path / "data/motion/test_door"
     object_body_name, object_joint_name = _write_motion_dir(motion_dir)

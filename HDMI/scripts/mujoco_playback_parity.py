@@ -23,6 +23,7 @@ from active_adaptation.mujoco import (
     compute_kinematic_motion_playback_parity,
     run_mujoco_policy_rollout,
 )
+from active_adaptation.mujoco.task_mapping import validate_task_motion_mapping
 
 
 KINEMATIC_REWARD_TERMS = {
@@ -205,6 +206,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         task_cfg = _load_task_config_from_args(args)
         playback_inputs = _resolve_playback_inputs(args, task_cfg)
         contact_inputs = _resolve_contact_inputs(args, task_cfg)
+        mapping_report = _task_mapping_report_from_args(args, task_cfg)
         reward_config = _load_reward_config_from_args(args, task_cfg)
         summary = run_parity(
             motion_dir=playback_inputs["motion_dir"],
@@ -223,6 +225,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             policy_path=args.policy_path,
             policy_rollout=args.policy_rollout,
         )
+        if mapping_report is not None:
+            summary.update(_task_mapping_summary(mapping_report))
     print(json.dumps(summary, sort_keys=True))
     return 0
 
@@ -379,6 +383,40 @@ def _resolve_playback_inputs(
         "object_body_name": args.object_body_name or command_cfg.get("object_body_name"),
         "object_joint_name": args.object_joint_name or command_cfg.get("object_joint_name"),
         "root_body_name": args.root_body_name or command_cfg.get("root_body_name"),
+    }
+
+
+def _task_mapping_report_from_args(
+    args: argparse.Namespace,
+    task_cfg: Mapping[str, Any] | None,
+):
+    if task_cfg is None:
+        return None
+    command_cfg = _task_command_config(task_cfg, args.task_yaml)
+    if "object_asset_name" not in command_cfg:
+        return None
+    if any(
+        value is not None
+        for value in (
+            args.motion_dir,
+            args.object_name,
+            args.object_type,
+            args.object_body_name,
+            args.object_joint_name,
+            args.root_body_name,
+        )
+    ):
+        return None
+    return validate_task_motion_mapping(args.task_yaml, robot_name=args.robot_name)
+
+
+def _task_mapping_summary(mapping_report) -> dict[str, Any]:
+    return {
+        "task_object_body_name": mapping_report.task_object_body_name,
+        "reference_object_body_name": mapping_report.reference_object_body_name,
+        "asset_object_body_names": list(mapping_report.asset_object_body_names),
+        "asset_object_joint_names": list(mapping_report.asset_object_joint_names),
+        "extra_object_names": list(mapping_report.extra_object_names),
     }
 
 
