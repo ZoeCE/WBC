@@ -9,6 +9,11 @@ from isaaclab.utils.math import quat_apply_inverse, sample_uniform
 
 RobotObjectTrackRandomization = BaseRandomization[RobotObjectTracking]
 
+
+def _record_randomization_mean(env, key: str, value: torch.Tensor) -> None:
+    env.extra[f"randomization/{key}"] = float(value.detach().float().mean().cpu().item())
+
+
 class object_body_randomization(RobotObjectTrackRandomization ):
     def __init__(
         self,
@@ -82,6 +87,15 @@ class object_body_randomization(RobotObjectTrackRandomization ):
         self.object.root_physx_view.set_material_properties(materials.flatten(), self.all_indices_cpu)
         assert torch.allclose(self.object.root_physx_view.get_material_properties(), materials, atol=1e-4)
 
+    def reset(self, env_ids: torch.Tensor):
+        masses = self.object.root_physx_view.get_masses()
+        materials = self.object.root_physx_view.get_material_properties()
+        _record_randomization_mean(self.env, "object_body_mass_mean", masses)
+        _record_randomization_mean(self.env, "object_body_static_friction_mean", materials[..., 0])
+        _record_randomization_mean(self.env, "object_body_dynamic_friction_mean", materials[..., 1])
+        _record_randomization_mean(self.env, "object_body_restitution_mean", materials[..., 2])
+
+
 class object_joint_randomization(RobotObjectTrackRandomization):
     def __init__(
         self,
@@ -102,6 +116,7 @@ class object_joint_randomization(RobotObjectTrackRandomization):
     
     def startup(self):
         door_armature = sample_uniform(*self.armature_range, (self.object.num_instances, 1), self.device)
+        self._armature = door_armature.squeeze(-1)
         self.object.write_joint_armature_to_sim(door_armature, joint_ids=[self.joint_id_asset])
 
     def reset(self, env_ids: torch.Tensor):
@@ -110,6 +125,9 @@ class object_joint_randomization(RobotObjectTrackRandomization):
 
         self.object._custom_friction[env_ids] = joint_friction
         self.object._custom_damping[env_ids] = joint_damping
+        _record_randomization_mean(self.env, "object_joint_armature_mean", self._armature)
+        _record_randomization_mean(self.env, "object_joint_friction_mean", self.object._custom_friction)
+        _record_randomization_mean(self.env, "object_joint_damping_mean", self.object._custom_damping)
 
 # class keypoint_virtual_force(RobotTrackRandomization):
 #     def __init__(

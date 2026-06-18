@@ -250,6 +250,13 @@ def test_mujoco_simple_env_applies_object_randomization_from_task_cfg():
         assert torch.allclose(armatures, torch.full_like(armatures, 0.03))
         assert torch.allclose(door._custom_friction, torch.full_like(door._custom_friction, 0.7))
         assert torch.allclose(door._custom_damping, torch.full_like(door._custom_damping, 2.5))
+        assert abs(env.extra["randomization/object_body_mass_mean"] - 9.0) < 1e-6
+        assert abs(env.extra["randomization/object_body_static_friction_mean"] - 1.2) < 1e-6
+        assert abs(env.extra["randomization/object_body_dynamic_friction_mean"] - 0.6) < 1e-6
+        assert abs(env.extra["randomization/object_body_restitution_mean"] - 0.1) < 1e-6
+        assert abs(env.extra["randomization/object_joint_armature_mean"] - 0.03) < 1e-6
+        assert abs(env.extra["randomization/object_joint_friction_mean"] - 0.7) < 1e-6
+        assert abs(env.extra["randomization/object_joint_damping_mean"] - 2.5) < 1e-6
     finally:
         if env is not None:
             env.close()
