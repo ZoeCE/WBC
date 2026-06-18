@@ -12,6 +12,7 @@ class PlaybackParityMetrics:
     q_l2: torch.Tensor
     body_pos_l2: torch.Tensor
     reward: torch.Tensor | None = None
+    reward_terms: Mapping[str, torch.Tensor] | None = None
 
 
 @dataclass(frozen=True)
@@ -257,6 +258,7 @@ def compute_kinematic_motion_playback_parity(
     q_l2: list[torch.Tensor] = []
     body_pos_l2: list[torch.Tensor] = []
     rewards: list[torch.Tensor] = []
+    reward_terms_by_step: list[Mapping[str, torch.Tensor]] = []
     for step in steps_t.tolist():
         _write_reference_frame_to_scene(
             scene=scene,
@@ -336,8 +338,9 @@ def compute_kinematic_motion_playback_parity(
                 contact_target_pos_offset=contact_target_pos_offset,
                 contact_eef_pos_offset=contact_eef_pos_offset,
             )
-            reward = compute_reward_from_spec(reward_cfg, reward_state)
+            reward, reward_terms = compute_reward_components_from_spec(reward_cfg, reward_state)
             rewards.append(reward)
+            reward_terms_by_step.append(reward_terms)
 
         metrics = compute_playback_parity(
             q_mujoco=actual_joint_pos,
@@ -353,12 +356,32 @@ def compute_kinematic_motion_playback_parity(
         q_l2=torch.stack(q_l2),
         body_pos_l2=torch.stack(body_pos_l2),
         reward=torch.stack(rewards) if rewards else None,
+        reward_terms=_stack_reward_term_series(reward_terms_by_step) if reward_terms_by_step else None,
     )
 
 
 def compute_reward_from_spec(reward_cfg: Mapping[str, Any], state: MujocoRewardState) -> torch.Tensor:
     """Compute HDMI-style reward groups from MuJoCo playback tensors."""
+    reward, _ = compute_reward_components_from_spec(reward_cfg, state)
+    return reward
+
+
+def compute_reward_terms_from_spec(
+    reward_cfg: Mapping[str, Any],
+    state: MujocoRewardState,
+) -> dict[str, torch.Tensor]:
+    """Compute weighted HDMI-style reward terms before group aggregation."""
+    _, reward_terms = compute_reward_components_from_spec(reward_cfg, state)
+    return reward_terms
+
+
+def compute_reward_components_from_spec(
+    reward_cfg: Mapping[str, Any],
+    state: MujocoRewardState,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Compute total MuJoCo reward plus weighted per-term reward tensors."""
     group_rewards: list[torch.Tensor] = []
+    reward_terms: dict[str, torch.Tensor] = {}
     for group_name, group_cfg in reward_cfg.items():
         if group_name == "_mult_dt_":
             continue
@@ -376,8 +399,9 @@ def compute_reward_from_spec(reward_cfg: Mapping[str, Any], state: MujocoRewardS
 
             weight = float(params.pop("weight", 1.0))
             term_name = _formula_name(raw_term_name)
-            term_reward = _compute_reward_term(term_name, params, state)
-            term_rewards.append(term_reward * weight)
+            weighted_term_reward = _compute_reward_term(term_name, params, state) * weight
+            reward_terms[f"{group_name}.{raw_term_name}"] = weighted_term_reward
+            term_rewards.append(weighted_term_reward)
 
         if not term_rewards:
             continue
@@ -389,7 +413,17 @@ def compute_reward_from_spec(reward_cfg: Mapping[str, Any], state: MujocoRewardS
 
     if not group_rewards:
         raise ValueError("reward_cfg did not contain any enabled MuJoCo-supported reward terms.")
-    return torch.cat(group_rewards, dim=1)
+    return torch.cat(group_rewards, dim=1), reward_terms
+
+
+def _stack_reward_term_series(
+    reward_terms_by_step: Sequence[Mapping[str, torch.Tensor]],
+) -> dict[str, torch.Tensor]:
+    keys = tuple(reward_terms_by_step[0].keys())
+    for step_terms in reward_terms_by_step[1:]:
+        if tuple(step_terms.keys()) != keys:
+            raise ValueError("reward term keys changed across playback steps.")
+    return {key: torch.stack([step_terms[key] for step_terms in reward_terms_by_step]) for key in keys}
 
 
 def _formula_name(term_name: str) -> str:

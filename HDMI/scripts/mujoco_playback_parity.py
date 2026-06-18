@@ -259,6 +259,7 @@ def write_trace_json(
             "q_l2": _trace_tensor(playback_metrics.q_l2),
             "body_pos_l2": _trace_tensor(playback_metrics.body_pos_l2),
             "reward": _trace_tensor(playback_metrics.reward),
+            "reward_terms": _trace_tensor_mapping(playback_metrics.reward_terms),
         },
         "policy_rollout": None,
     }
@@ -270,6 +271,7 @@ def write_trace_json(
             "joint_position_targets": _trace_tensor(policy_rollout_metrics.joint_position_targets),
             "action_rate_l2": _trace_tensor(policy_rollout_metrics.action_rate_l2),
             "reward": _trace_tensor(policy_rollout_metrics.reward),
+            "reward_terms": _trace_tensor_mapping(policy_rollout_metrics.reward_terms),
         }
 
     path = Path(path)
@@ -282,6 +284,12 @@ def _trace_tensor(value: torch.Tensor | None) -> dict[str, Any] | None:
         return None
     value = value.detach().cpu()
     return {"shape": list(value.shape), "values": value.tolist()}
+
+
+def _trace_tensor_mapping(value: Mapping[str, torch.Tensor] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return {name: _trace_tensor(tensor) for name, tensor in value.items()}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

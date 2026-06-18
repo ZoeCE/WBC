@@ -24,7 +24,7 @@ from .playback_parity import (
     _scene_object_views,
     _scene_optional_asset,
     compute_playback_parity,
-    compute_reward_from_spec,
+    compute_reward_components_from_spec,
 )
 
 _OBJECT_POSE_OBS_KEYS = ("object_xy_b", "object_heading_b", "object_pos_b", "object_ori_b")
@@ -38,6 +38,7 @@ class MujocoPolicyRolloutMetrics:
     joint_position_targets: torch.Tensor
     action_rate_l2: torch.Tensor
     reward: torch.Tensor | None = None
+    reward_terms: Mapping[str, torch.Tensor] | None = None
 
 
 def run_mujoco_policy_rollout(
@@ -99,6 +100,7 @@ def run_mujoco_policy_rollout(
     body_pos_l2: list[torch.Tensor] = []
     action_rate_l2: list[torch.Tensor] = []
     rewards: list[torch.Tensor] = []
+    reward_terms_by_step: list[Mapping[str, torch.Tensor]] = []
 
     for rollout_index, step_t in enumerate(steps_t):
         step = int(step_t.item())
@@ -140,7 +142,7 @@ def run_mujoco_policy_rollout(
             reward_parity.action_rate_l2(action_buf).detach().cpu()
         )
         if reward_cfg is not None:
-            reward = _policy_rollout_reward_from_scene(
+            reward, reward_terms = _policy_rollout_reward_from_scene(
                 scene=scene,
                 robot=robot,
                 reference=reference,
@@ -159,6 +161,9 @@ def run_mujoco_policy_rollout(
                 contact_eef_pos_offset=contact_eef_pos_offset,
             )
             rewards.append(reward.detach().cpu())
+            reward_terms_by_step.append(
+                {term_name: term_reward.detach().cpu() for term_name, term_reward in reward_terms.items()}
+            )
 
         applied_action = action.raw_action.detach()
         action_history = action_history.roll(1, dims=2)
@@ -171,6 +176,7 @@ def run_mujoco_policy_rollout(
         joint_position_targets=torch.stack(joint_targets),
         action_rate_l2=torch.stack(action_rate_l2),
         reward=torch.stack(rewards) if rewards else None,
+        reward_terms=_stack_reward_term_series(reward_terms_by_step) if reward_terms_by_step else None,
     )
 
 
@@ -203,7 +209,7 @@ def _policy_rollout_reward_from_scene(
     contact_eef_body_names: Sequence[str] | None,
     contact_target_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None,
     contact_eef_pos_offset: Sequence[Sequence[float]] | torch.Tensor | None,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     actual_body_quat_w = _gather_scene_body_quat_w(
         robot=robot,
         body_names=reference.requested_body_names,
@@ -266,7 +272,17 @@ def _policy_rollout_reward_from_scene(
         contact_eef_pos_offset=contact_eef_pos_offset,
         action_buf=action_buf,
     )
-    return compute_reward_from_spec(reward_cfg, reward_state)
+    return compute_reward_components_from_spec(reward_cfg, reward_state)
+
+
+def _stack_reward_term_series(
+    reward_terms_by_step: Sequence[Mapping[str, torch.Tensor]],
+) -> dict[str, torch.Tensor]:
+    keys = tuple(reward_terms_by_step[0].keys())
+    for step_terms in reward_terms_by_step[1:]:
+        if tuple(step_terms.keys()) != keys:
+            raise ValueError("reward term keys changed across rollout steps.")
+    return {key: torch.stack([step_terms[key] for step_terms in reward_terms_by_step]) for key in keys}
 
 
 def _ordered_joint_ids(robot: Any, joint_names_expected: Sequence[str], *, label: str) -> list[int]:

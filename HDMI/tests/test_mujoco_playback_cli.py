@@ -743,6 +743,16 @@ def test_mujoco_playback_parity_cli_writes_per_step_trace_json(tmp_path, capsys)
     assert trace["policy_rollout"]["action_rate_l2"]["shape"] == [2, 2, 1]
     assert trace["policy_rollout"]["actions"]["shape"] == [2, 2, 1]
     assert trace["policy_rollout"]["reward"]["values"] == [[[1.0], [1.0]], [[1.0], [1.0]]]
+    assert trace["playback"]["reward_terms"]["loco.survival"]["shape"] == [2, 2, 1]
+    assert trace["playback"]["reward_terms"]["loco.survival"]["values"] == [
+        [[1.0], [1.0]],
+        [[1.0], [1.0]],
+    ]
+    assert trace["policy_rollout"]["reward_terms"]["loco.survival"]["shape"] == [2, 2, 1]
+    assert trace["policy_rollout"]["reward_terms"]["loco.survival"]["values"] == [
+        [[1.0], [1.0]],
+        [[1.0], [1.0]],
+    ]
 
 def test_mujoco_playback_parity_cli_fills_object_policy_observations_from_reference(tmp_path, capsys):
     object_body_name, object_joint_name = _write_motion_dir(tmp_path)
