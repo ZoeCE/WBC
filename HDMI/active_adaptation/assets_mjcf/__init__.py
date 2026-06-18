@@ -1,7 +1,9 @@
 import os
+from dataclasses import replace
 
+import mujoco
 import active_adaptation.utils.symmetry as symmetry_utils
-from active_adaptation.assets_mjcf.types import MJArticulationCfg
+from active_adaptation.assets_mjcf.types import MJArticulationCfg, MJObjectSpec
 
 
 PATH = os.path.dirname(__file__)
@@ -98,6 +100,37 @@ class RobotRegistry(dict):
         )
         self._loaded = True
 
+    def with_object(self, robot_name: str, object_asset_name: str, object_type: str | None = None):
+        self._ensure_loaded()
+        object_type = object_type or object_asset_name
+        cache_key = f"{robot_name}-{object_type}"
+        if cache_key in self:
+            return super().__getitem__(cache_key)
+
+        base_cfg = super().__getitem__(robot_name)
+        from active_adaptation.assets_mjcf.manifest import load_mujoco_asset_manifest
+
+        mjcf_path = os.path.join(PATH, "g1_29dof_nohand", f"g1_29dof_nohand-{object_type}.xml")
+        if not os.path.exists(mjcf_path):
+            raise KeyError(f"No MuJoCo object scene for {robot_name=} and {object_type=}: {mjcf_path}")
+
+        base_manifest = load_mujoco_asset_manifest(base_cfg.mjcf_path)
+        model = mujoco.MjModel.from_xml_path(mjcf_path)
+        object_specs = _build_object_specs(
+            model=model,
+            robot_body_names=base_manifest.body_names,
+            robot_joint_names=base_manifest.tracking_joint_names,
+        )
+        if object_asset_name not in object_specs:
+            raise KeyError(
+                f"Object asset {object_asset_name!r} is not a top-level object body in {mjcf_path}. "
+                f"Available objects: {sorted(object_specs)}"
+            )
+
+        cfg = replace(base_cfg, mjcf_path=mjcf_path, object_specs=object_specs)
+        super().__setitem__(cache_key, cfg)
+        return cfg
+
     def __getitem__(self, key):
         self._ensure_loaded()
         return super().__getitem__(key)
@@ -105,6 +138,56 @@ class RobotRegistry(dict):
     def keys(self):
         self._ensure_loaded()
         return super().keys()
+
+
+def _build_object_specs(model, robot_body_names, robot_joint_names):
+    robot_body_names = set(robot_body_names)
+    robot_joint_names = set(robot_joint_names)
+    specs: dict[str, MJObjectSpec] = {}
+
+    for body_id in range(1, model.nbody):
+        body_name = model.body(body_id).name
+        if body_name in robot_body_names:
+            continue
+
+        parent_id = int(model.body_parentid[body_id])
+        parent_name = model.body(parent_id).name if parent_id > 0 else ""
+        if parent_id != 0 and parent_name not in robot_body_names:
+            continue
+
+        subtree_ids = _body_subtree_ids(model, body_id)
+        body_names = tuple(model.body(i).name for i in subtree_ids)
+        subtree_id_set = set(subtree_ids)
+        joint_names = []
+        for joint_id in range(model.njnt):
+            joint = model.joint(joint_id)
+            joint_name = joint.name
+            if joint_name in robot_joint_names or joint.type == mujoco.mjtJoint.mjJNT_FREE:
+                continue
+            if int(model.jnt_bodyid[joint_id]) in subtree_id_set:
+                joint_names.append(joint_name)
+
+        specs[body_name] = MJObjectSpec(
+            asset_name=body_name,
+            body_names=body_names,
+            joint_names=tuple(joint_names),
+        )
+
+    return specs
+
+
+def _body_subtree_ids(model, root_body_id: int):
+    ids = []
+    stack = [root_body_id]
+    while stack:
+        body_id = stack.pop()
+        ids.append(body_id)
+        children = [
+            i for i in range(1, model.nbody)
+            if int(model.body_parentid[i]) == body_id
+        ]
+        stack.extend(reversed(children))
+    return ids
 
 
 ROBOTS = RobotRegistry()

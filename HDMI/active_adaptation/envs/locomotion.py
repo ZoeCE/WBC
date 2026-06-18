@@ -228,13 +228,34 @@ class SimpleEnv(_Env):
             with open(path, "w") as f:
                 json.dump(asset_meta, f, indent=4)
         else:
-            from active_adaptation.envs.mujoco import MJScene, MJSim
+            from active_adaptation.envs.mujoco import MJContactSensorCfg, MJScene, MJSim
             from active_adaptation.assets_mjcf import ROBOTS
+
+            robot_cfg = ROBOTS[self.cfg.robot.name]
+            object_asset_name = None
+            if "object_asset_name" in self.cfg.command:
+                object_asset_name = self.cfg.command.object_asset_name
+                object_type = self.cfg.command.get("object_type", object_asset_name)
+                robot_cfg = ROBOTS.with_object(
+                    self.cfg.robot.name,
+                    object_asset_name=object_asset_name,
+                    object_type=object_type,
+                )
 
             @configclass
             class SceneCfg:
-                robot = ROBOTS[self.cfg.robot.name]
+                robot = robot_cfg
                 contact_forces = "robot"
+
+            if object_asset_name is not None:
+                obj_contact_body_name = self.cfg.command.object_body_name
+                for eef_name in self.cfg.command.get("contact_eef_body_name", []):
+                    contact_sensor_name = f"{eef_name}_{object_asset_name}_contact_forces"
+                    setattr(SceneCfg, contact_sensor_name, MJContactSensorCfg(
+                        target="robot",
+                        body_names=[eef_name],
+                        filter_body_names=[obj_contact_body_name],
+                    ))
             
             env_spacing = self.cfg.viewer.get("env_spacing", 0.0)
             launch_viewer = not bool(getattr(self.cfg, "headless", True))
@@ -258,4 +279,3 @@ class SimpleEnv(_Env):
         #     target=self.robot.data.root_pos_w[look_at_env_id].cpu() + torch.as_tensor(self.cfg.viewer.lookat)
         # )
         return super().render(mode)
-
