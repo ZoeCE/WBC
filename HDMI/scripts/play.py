@@ -13,7 +13,7 @@ from isaaclab.app import AppLauncher
 from torchrl.envs.utils import set_exploration_type, ExplorationType
 from tensordict.nn import TensorDictSequential
 
-from active_adaptation.utils.export import export_onnx
+from active_adaptation.utils.export import export_onnx_optional
 from active_adaptation.utils.wandb import parse_checkpoint_path
 
 
@@ -76,9 +76,6 @@ def main(cfg):
         path = os.path.join(FILE_PATH, "exports", cfg.task.name, f"policy-{wandb_run_id}-{checkpoint_num}.pt")
         torch.save(_policy, path)
 
-        meta = {}
-        export_onnx(_policy, fake_input, path.replace(".pt", ".onnx"), meta)
-
         # export policy config
         dict_cfg = OmegaConf.to_container(cfg, resolve=True)
         ## observation
@@ -86,6 +83,7 @@ def main(cfg):
         obs_cfg = dict()
         for k in deploy_policy.in_keys:
             obs_cfg[k] = dict_cfg["task"]["observation"][k]
+        _annotate_exported_observation_metadata(obs_cfg, env)
         policy_config["observation"] = obs_cfg
         
         ## action
@@ -231,6 +229,20 @@ def main(cfg):
             yaml.dump(policy_config, f, sort_keys=False)
         print(f"Policy config saved to {path.replace('.pt', '.yaml')}")
 
+        if cfg.get("export_onnx_policy", True):
+            meta = {}
+            export_onnx_optional(
+                _policy,
+                fake_input,
+                path.replace(".pt", ".onnx"),
+                meta,
+                required=bool(cfg.get("export_onnx_required", False)),
+            )
+
+        if cfg.get("export_policy_exit", False):
+            print("Policy export complete; exiting before playback.")
+            return
+
     stats_keys = [
         k for k in env.reward_spec.keys(True, True) 
         if isinstance(k, tuple) and k[0]=="stats"
@@ -256,6 +268,27 @@ def main(cfg):
     
     env.close()
     simulation_app.close()
+
+
+def _annotate_exported_observation_metadata(obs_cfg, env):
+    for group_key, group_obs_cfg in obs_cfg.items():
+        obs_group = env.observation_funcs.get(group_key)
+        if obs_group is None or not isinstance(group_obs_cfg, dict):
+            continue
+        for obs_key, obs_params in group_obs_cfg.items():
+            obs_func = obs_group.funcs.get(obs_key)
+            if obs_func is None:
+                continue
+            if obs_params is None:
+                obs_params = {}
+                group_obs_cfg[obs_key] = obs_params
+            if not isinstance(obs_params, dict):
+                continue
+            for attr in ("joint_names", "body_names"):
+                if hasattr(obs_func, attr) and attr not in obs_params:
+                    obs_params[attr] = [str(name) for name in getattr(obs_func, attr)]
+            if hasattr(obs_func, "history_steps") and "history_steps" not in obs_params:
+                obs_params["history_steps"] = [int(step) for step in obs_func.history_steps]
 
 
 if __name__ == "__main__":

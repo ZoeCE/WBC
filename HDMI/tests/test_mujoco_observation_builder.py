@@ -101,6 +101,32 @@ def test_policy_builder_can_return_named_components_for_debugging():
     assert torch.allclose(pieces["applied_action"], torch.tensor([[0.2, -0.3]]))
 
 
+def test_joint_pos_history_can_use_observation_joint_names_separate_from_actions():
+    cfg = {
+        "policy": {
+            "joint_pos_history": {
+                "history_steps": [0],
+                "joint_names": ["robot_j0", "robot_j1"],
+            },
+            "prev_actions": {"steps": 1},
+        }
+    }
+    builder = MujocoObservationBuilder(cfg, policy_joint_names=["action_j0"])
+    state = _state(
+        root=[[0.0, 0.0, 0.0]],
+        gravity=[[0.0, 0.0, -1.0]],
+        joint=[[1.0, 2.0]],
+        offset=[[0.1, 0.2]],
+        history=torch.tensor([[[0.7]]]),
+    )
+
+    builder.reset(state)
+
+    obs = builder.build_group("policy", state)
+
+    assert torch.allclose(obs, torch.tensor([[0.9, 1.8, 0.7]]))
+
+
 def test_history_observation_shared_by_groups_updates_once_per_state():
     cfg = {
         "policy": {"root_ang_vel_history": {"history_steps": [0, 1]}},

@@ -35,7 +35,12 @@ def run_mujoco_policy_rollout(
     if robot is None:
         raise KeyError("MuJoCo scene does not contain a 'robot' articulation.")
 
-    policy_joint_ids = _policy_joint_ids(robot, policy_bundle.policy_joint_names)
+    policy_joint_ids = _ordered_joint_ids(robot, policy_bundle.policy_joint_names, label="Policy joint")
+    observation_joint_ids = _ordered_joint_ids(
+        robot,
+        policy_bundle.observation_joint_names,
+        label="Policy observation joint",
+    )
     steps_t = _normalize_steps(steps, reference.num_steps)
 
     _write_reference_frame_to_scene(scene, reference, int(steps_t[0].item()))
@@ -50,6 +55,7 @@ def run_mujoco_policy_rollout(
             reference=reference,
             step=int(steps_t[0].item()),
             policy_joint_ids=policy_joint_ids,
+            observation_joint_ids=observation_joint_ids,
             applied_action=applied_action,
             action_history=action_history,
         )
@@ -68,6 +74,7 @@ def run_mujoco_policy_rollout(
             reference=reference,
             step=step,
             policy_joint_ids=policy_joint_ids,
+            observation_joint_ids=observation_joint_ids,
             applied_action=applied_action,
             action_history=action_history,
         )
@@ -107,10 +114,11 @@ def run_mujoco_policy_rollout(
     )
 
 
-def _policy_joint_ids(robot: Any, policy_joint_names: Sequence[str]) -> list[int]:
-    joint_ids, joint_names = robot.find_joints(list(policy_joint_names), preserve_order=True)
-    if joint_names != list(policy_joint_names):
-        raise ValueError(f"Policy joint order mismatch: expected {list(policy_joint_names)}, got {joint_names}.")
+def _ordered_joint_ids(robot: Any, joint_names_expected: Sequence[str], *, label: str) -> list[int]:
+    joint_names_expected = list(joint_names_expected)
+    joint_ids, joint_names = robot.find_joints(joint_names_expected, preserve_order=True)
+    if joint_names != joint_names_expected:
+        raise ValueError(f"{label} order mismatch: expected {joint_names_expected}, got {joint_names}.")
     return joint_ids
 
 
@@ -121,6 +129,7 @@ def _policy_state_from_scene(
     reference: MujocoMotionReference,
     step: int,
     policy_joint_ids: Sequence[int],
+    observation_joint_ids: Sequence[int],
     applied_action: torch.Tensor,
     action_history: torch.Tensor,
 ) -> MujocoPolicyState:
@@ -131,8 +140,8 @@ def _policy_state_from_scene(
     return MujocoPolicyState(
         root_ang_vel_b=robot.data.root_ang_vel_b,
         projected_gravity_b=robot.data.projected_gravity_b,
-        joint_pos=robot.data.joint_pos[:, policy_joint_ids],
-        joint_pos_offset=torch.zeros_like(robot.data.joint_pos[:, policy_joint_ids]),
+        joint_pos=robot.data.joint_pos[:, observation_joint_ids],
+        joint_pos_offset=torch.zeros_like(robot.data.joint_pos[:, observation_joint_ids]),
         applied_action=applied_action,
         action_history=action_history,
         ref_body_pos_future_w=fields.ref_body_pos_future_w,

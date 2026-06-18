@@ -1,6 +1,6 @@
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import torch
 
@@ -30,9 +30,16 @@ class MujocoPolicyState:
 class MujocoObservationBuilder:
     """Build policy observation tensors from MuJoCo state using exported HDMI obs config."""
 
-    def __init__(self, observation_cfg: Mapping, policy_joint_names: list[str]):
+    def __init__(
+        self,
+        observation_cfg: Mapping,
+        policy_joint_names: list[str],
+        observation_joint_names: Sequence[str] | None = None,
+    ):
         self.observation_cfg = observation_cfg
         self.policy_joint_names = list(policy_joint_names)
+        fallback_joint_names = observation_joint_names if observation_joint_names is not None else policy_joint_names
+        self.joint_pos_names = _joint_pos_names(observation_cfg, fallback_joint_names)
         self.action_dim = len(self.policy_joint_names)
         self._history: dict[str, torch.Tensor] = {}
         self._initialized = False
@@ -95,7 +102,7 @@ class MujocoObservationBuilder:
         if obs_key == "projected_gravity_history":
             return state.projected_gravity_b
         if obs_key == "joint_pos_history":
-            return state.joint_pos
+            return _require_last_dim(state.joint_pos, len(self.joint_pos_names), "joint_pos")
         raise NotImplementedError(f"Unsupported MuJoCo history observation '{obs_key}'.")
 
     def _build_component(self, obs_key: str, params: Mapping, state: MujocoPolicyState) -> torch.Tensor:
@@ -104,7 +111,7 @@ class MujocoObservationBuilder:
         if obs_key == "joint_pos_history":
             joint_pos = self._select_history(obs_key, params)
             steps = len(_history_steps(params))
-            offset = _joint_offset(state, self.action_dim)
+            offset = _joint_offset(state, len(self.joint_pos_names))
             offset = offset.unsqueeze(1).expand(-1, steps, -1).reshape(joint_pos.shape)
             return joint_pos - offset
         if obs_key == "ref_body_pos_future_local":
@@ -156,12 +163,41 @@ def _history_steps(params: Mapping) -> list[int]:
     return list(params.get("history_steps", [0]))
 
 
-def _joint_offset(state: MujocoPolicyState, action_dim: int) -> torch.Tensor:
+def _joint_pos_names(observation_cfg: Mapping, fallback_joint_names: Sequence[str]) -> list[str]:
+    fallback = [str(name) for name in fallback_joint_names]
+    resolved: list[str] | None = None
+    for group_cfg in observation_cfg.values():
+        for obs_key, params in group_cfg.items():
+            if obs_key != "joint_pos_history":
+                continue
+            params = params or {}
+            names = params.get("joint_names")
+            if names is None:
+                names_t = fallback
+            elif isinstance(names, str):
+                names_t = [names]
+            else:
+                names_t = [str(name) for name in names]
+            if resolved is None:
+                resolved = names_t
+            elif resolved != names_t:
+                raise ValueError(
+                    "MuJoCo policy export uses inconsistent joint_pos_history joint_names "
+                    f"{resolved} and {names_t}."
+                )
+    return resolved if resolved is not None else fallback
+
+
+def _joint_offset(state: MujocoPolicyState, joint_pos_dim: int) -> torch.Tensor:
     if state.joint_pos_offset is None:
         return torch.zeros_like(state.joint_pos)
-    if state.joint_pos_offset.shape[-1] != action_dim:
-        raise ValueError(f"joint_pos_offset dim {state.joint_pos_offset.shape[-1]} != action dim {action_dim}.")
-    return state.joint_pos_offset
+    return _require_last_dim(state.joint_pos_offset, joint_pos_dim, "joint_pos_offset")
+
+
+def _require_last_dim(value: torch.Tensor, expected_dim: int, name: str) -> torch.Tensor:
+    if value.shape[-1] != expected_dim:
+        raise ValueError(f"MujocoPolicyState.{name} dim {value.shape[-1]} != joint_pos_history dim {expected_dim}.")
+    return value
 
 
 def _applied_action(state: MujocoPolicyState, action_dim: int) -> torch.Tensor:

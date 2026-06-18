@@ -100,21 +100,35 @@ def run_parity(
         }
     )
     if policy_path is not None:
+        policy_reference = _policy_reference_from_export(
+            motion_dir=motion_dir,
+            policy_path=policy_path,
+            fallback_body_names=body_names,
+            fallback_joint_names=joint_names,
+            fallback_root_body_name=root_body_name,
+        )
         summary.update(
             run_policy_playback_smoke(
                 policy_path=policy_path,
-                reference=reference,
+                reference=policy_reference,
                 steps=steps,
                 num_envs=num_envs,
             )
         )
     if policy_rollout:
+        policy_reference = _policy_reference_from_export(
+            motion_dir=motion_dir,
+            policy_path=policy_path,
+            fallback_body_names=body_names,
+            fallback_joint_names=joint_names,
+            fallback_root_body_name=root_body_name,
+        )
         summary.update(
             summarize_policy_rollout_metrics(
                 run_mujoco_policy_rollout(
                     scene=scene,
                     policy_bundle=MujocoPolicyBundle.load(policy_path),
-                    reference=reference,
+                    reference=policy_reference,
                     steps=steps,
                 )
             )
@@ -229,6 +243,83 @@ def _load_motion_meta(motion_dir: Path) -> dict[str, Any]:
     return json.loads(meta_path.read_text())
 
 
+def _policy_reference_from_export(
+    *,
+    motion_dir: Path,
+    policy_path: str | Path,
+    fallback_body_names: Sequence[str],
+    fallback_joint_names: Sequence[str],
+    fallback_root_body_name: str,
+) -> MujocoMotionReference:
+    policy_cfg = _load_yaml_mapping(_policy_config_path(policy_path))
+    command_cfg = _policy_observation_group(policy_cfg, ("command", "command_"))
+    if command_cfg is None:
+        return MujocoMotionReference.from_motion_dir(
+            motion_dir=motion_dir,
+            body_names=list(fallback_body_names),
+            joint_names=list(fallback_joint_names),
+            root_body_name=fallback_root_body_name,
+            future_steps=[0],
+        )
+
+    return MujocoMotionReference.from_motion_dir(
+        motion_dir=motion_dir,
+        body_names=_policy_observation_list(command_cfg, "body_names", fallback_body_names, str),
+        joint_names=_policy_observation_list(command_cfg, "joint_names", fallback_joint_names, str),
+        root_body_name=str(_policy_observation_value(command_cfg, "root_body_name", fallback_root_body_name)),
+        future_steps=_policy_observation_list(command_cfg, "future_steps", [0], int),
+    )
+
+
+def _policy_config_path(policy_path: str | Path) -> Path:
+    policy_path = Path(policy_path)
+    for suffix in (".yaml", ".yml"):
+        candidate = policy_path.with_suffix(suffix)
+        if candidate.is_file():
+            return candidate
+    return policy_path.with_suffix(".yaml")
+
+
+def _policy_observation_group(
+    policy_cfg: Mapping[str, Any],
+    group_names: Sequence[str],
+) -> Mapping[str, Any] | None:
+    observation_cfg = policy_cfg.get("observation", {})
+    if not isinstance(observation_cfg, Mapping):
+        raise ValueError("Exported policy observation config must be a mapping.")
+    for group_name in group_names:
+        group_cfg = observation_cfg.get(group_name)
+        if group_cfg is None:
+            continue
+        if not isinstance(group_cfg, Mapping):
+            raise ValueError(f"Exported policy observation group {group_name!r} must be a mapping.")
+        return group_cfg
+    return None
+
+
+def _policy_observation_value(
+    group_cfg: Mapping[str, Any],
+    key: str,
+    fallback: Any,
+) -> Any:
+    for obs_cfg in group_cfg.values():
+        if isinstance(obs_cfg, Mapping) and key in obs_cfg:
+            return obs_cfg[key]
+    return fallback
+
+
+def _policy_observation_list(
+    group_cfg: Mapping[str, Any],
+    key: str,
+    fallback: Sequence[Any],
+    item_type: type,
+) -> list[Any]:
+    value = _policy_observation_value(group_cfg, key, fallback)
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ValueError(f"Exported policy observation {key!r} must be a sequence, got {type(value).__name__}.")
+    return [item_type(item) for item in value]
+
+
 def _load_json(path: str | Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text())
 
@@ -320,7 +411,7 @@ def run_policy_playback_smoke(
     steps_t = _normalize_policy_steps(steps, reference.num_steps)
     action_history = torch.zeros(num_envs, bundle.action_dim, _policy_action_history_steps(bundle))
     applied_action = torch.zeros(num_envs, bundle.action_dim)
-    default_joint_pos = bundle.default_joint_pos.unsqueeze(0).expand(num_envs, -1)
+    default_joint_pos = bundle.observation_default_joint_pos.unsqueeze(0).expand(num_envs, -1)
 
     raw_actions: list[torch.Tensor] = []
     joint_targets: list[torch.Tensor] = []
@@ -384,7 +475,7 @@ def _policy_state_from_reference(
         root_ang_vel_b=zeros_ang_vel,
         projected_gravity_b=projected_gravity,
         joint_pos=joint_pos,
-        joint_pos_offset=joint_pos,
+        joint_pos_offset=torch.zeros_like(joint_pos),
         applied_action=applied_action,
         action_history=action_history,
         ref_body_pos_future_w=fields.ref_body_pos_future_w,

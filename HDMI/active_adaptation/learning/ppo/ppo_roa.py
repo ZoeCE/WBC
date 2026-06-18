@@ -139,6 +139,16 @@ class GRUModule(nn.Module):
         return (out3, hx.contiguous())
 
 
+class RefJointPos(nn.Module):
+    def forward(self, ref_jpos, action):
+        return (ref_jpos + action,)
+
+
+class DummyRefJointPos(nn.Module):
+    def forward(self, ref_jpos, action):
+        return action
+
+
 class PPOROA(TensorDictModuleBase):
     train_in_keys = [CMD_KEY, OBS_KEY, OBS_PRIV_KEY, ACTION_KEY,
                      "adv", "ret", "is_init", "sample_log_prob", "step_count"]
@@ -222,14 +232,8 @@ class PPOROA(TensorDictModuleBase):
         # build actor
         if cfg.phase == "train" and cfg.enable_residual_distillation:
             assert REF_JPOS_KEY in observation_spec, f"{REF_JPOS_KEY} should be in observation_spec"
-            class RefJointPos(nn.Module):
-                def forward(self, ref_jpos, action):
-                    return (ref_jpos + action,)
             residual_module_cls = RefJointPos
         else:
-            class DummyRefJointPos(nn.Module):
-                def forward(self, ref_jpos, action):
-                    return action
             residual_module_cls = DummyRefJointPos
         in_keys = [REF_JPOS_KEY, "loc"]
         out_keys = ["loc"]

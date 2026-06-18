@@ -48,3 +48,14 @@ def export_onnx(module: ModBase, td: TensorDictBase, path: str, meta=None):
 
     ort_output = ort_session.run(None, onnxruntime_input)
     assert len(ort_output) == len(module.out_keys)
+
+
+def export_onnx_optional(module: ModBase, td: TensorDictBase, path: str, meta=None, *, required: bool = False) -> bool:
+    try:
+        export_onnx(module, td, path, meta)
+    except Exception as exc:
+        if required:
+            raise
+        print(f"[Warning] ONNX export failed for {path}: {exc}")
+        return False
+    return True

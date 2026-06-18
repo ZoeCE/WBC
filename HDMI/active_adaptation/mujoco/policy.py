@@ -24,8 +24,10 @@ class MujocoPolicyBundle:
     config: Mapping[str, Any]
     observation_builder: MujocoObservationBuilder
     policy_joint_names: list[str]
+    observation_joint_names: list[str]
     action_scale: torch.Tensor
     default_joint_pos: torch.Tensor
+    observation_default_joint_pos: torch.Tensor
     policy_path: Path
     config_path: Path
 
@@ -42,6 +44,12 @@ class MujocoPolicyBundle:
         config = _load_yaml_mapping(config_path)
         observation_cfg = _required_mapping(config, "observation", config_path)
         policy_joint_names = _required_string_list(config, "policy_joint_names", config_path)
+        fallback_observation_joint_names = _optional_string_list(config, "isaac_joint_names") or policy_joint_names
+        observation_builder = MujocoObservationBuilder(
+            observation_cfg,
+            policy_joint_names=policy_joint_names,
+            observation_joint_names=fallback_observation_joint_names,
+        )
 
         policy = _torch_load_policy(policy_path, map_location=map_location)
         policy.eval()
@@ -58,13 +66,22 @@ class MujocoPolicyBundle:
             require_all=False,
             default=0.0,
         )
+        observation_default_joint_pos = resolve_named_values(
+            config.get("default_joint_pos", 0.0),
+            observation_builder.joint_pos_names,
+            field_name="default_joint_pos",
+            require_all=False,
+            default=0.0,
+        )
         return cls(
             policy=policy,
             config=config,
-            observation_builder=MujocoObservationBuilder(observation_cfg, policy_joint_names=policy_joint_names),
+            observation_builder=observation_builder,
             policy_joint_names=policy_joint_names,
+            observation_joint_names=observation_builder.joint_pos_names,
             action_scale=action_scale,
             default_joint_pos=default_joint_pos,
+            observation_default_joint_pos=observation_default_joint_pos,
             policy_path=policy_path,
             config_path=config_path,
         )
@@ -211,6 +228,15 @@ def _required_string_list(config: Mapping[str, Any], key: str, path: Path) -> li
     value = config.get(key)
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise ValueError(f"Exported policy config {path} must contain list key {key!r}.")
+    return [str(item) for item in value]
+
+
+def _optional_string_list(config: Mapping[str, Any], key: str) -> list[str] | None:
+    value = config.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError(f"Exported policy config key {key!r} must be a list when provided.")
     return [str(item) for item in value]
 
 

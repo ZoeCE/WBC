@@ -16,6 +16,9 @@ seed: 0
 checkpoint_path: null
 vecnorm: eval # ${oc.select:algo.vecnorm,train}
 export_policy: false
+export_onnx_policy: true
+export_onnx_required: false
+export_policy_exit: false
 
 camera_follow: true
 
