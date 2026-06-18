@@ -70,6 +70,44 @@ def joint_velocity_tracking_product(
     return torch.exp(-error.mean(dim=1) / sigma).unsqueeze(1)
 
 
+def survival(reference: torch.Tensor) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI survival reward."""
+    if reference.ndim == 0:
+        raise ValueError("survival reference tensor must have a batch dimension.")
+    return torch.ones(reference.shape[0], 1, dtype=reference.dtype, device=reference.device)
+
+
+def joint_velocity_l2(joint_vel: torch.Tensor) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI joint_vel_l2 reward with a single playback sample."""
+    if joint_vel.ndim != 2:
+        raise ValueError(f"joint_vel must have shape (num_envs, num_joints), got {tuple(joint_vel.shape)}.")
+    return -joint_vel.square().clamp_max(5.0).sum(dim=1, keepdim=True)
+
+
+def joint_position_limits(
+    joint_pos: torch.Tensor,
+    joint_pos_limits: torch.Tensor,
+    soft_factor: float = 0.9,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI joint_pos_limits reward."""
+    if joint_pos.ndim != 2:
+        raise ValueError(f"joint_pos must have shape (num_envs, num_joints), got {tuple(joint_pos.shape)}.")
+    if joint_pos_limits.shape != (*joint_pos.shape, 2):
+        raise ValueError(
+            f"joint_pos_limits shape {tuple(joint_pos_limits.shape)} != expected {(*joint_pos.shape, 2)}."
+        )
+    if soft_factor < 0:
+        raise ValueError(f"soft_factor must be non-negative, got {soft_factor}.")
+
+    jpos_mean = (joint_pos_limits[..., 0] + joint_pos_limits[..., 1]) / 2
+    jpos_range = joint_pos_limits[..., 1] - joint_pos_limits[..., 0]
+    soft_lower = jpos_mean - 0.5 * jpos_range * soft_factor
+    soft_upper = jpos_mean + 0.5 * jpos_range * soft_factor
+    violation_min = (soft_lower - joint_pos).clamp_min(0.0)
+    violation_max = (joint_pos - soft_upper).clamp_min(0.0)
+    return -(violation_min + violation_max).sum(dim=1, keepdim=True)
+
+
 def keypoint_orientation_tracking_product(
     actual_body_quat_w: torch.Tensor,
     ref_body_quat_w: torch.Tensor,

@@ -173,6 +173,44 @@ def test_reward_from_spec_supports_velocity_and_orientation_tracking_terms():
     assert torch.allclose(reward, expected, atol=1e-6)
 
 
+def test_reward_from_spec_supports_loco_survival_joint_velocity_and_position_limits():
+    joint_pos = torch.tensor([[-0.9, 0.0, 1.8], [0.6, 1.6, 0.2]])
+    joint_vel = torch.tensor([[1.0, -3.0, 10.0], [0.5, -0.5, 0.0]])
+    joint_pos_limits = torch.tensor(
+        [
+            [[-1.0, 1.0], [-2.0, 2.0], [0.0, 2.0]],
+            [[-1.0, 1.0], [-2.0, 2.0], [0.0, 2.0]],
+        ]
+    )
+    state = playback_parity.MujocoRewardState(
+        joint_pos=joint_pos,
+        joint_vel=joint_vel,
+        joint_pos_limits=joint_pos_limits,
+    )
+    reward_cfg = {
+        "loco": {
+            "survival": {"weight": 2.0},
+            "joint_vel_l2": {"weight": 0.1},
+            "joint_pos_limits": {"weight": 3.0, "soft_factor": 0.5},
+        }
+    }
+
+    reward = playback_parity.compute_reward_from_spec(reward_cfg, state)
+
+    survival = torch.ones(2, 1)
+    joint_vel_penalty = -joint_vel.square().clamp_max(5.0).sum(dim=1, keepdim=True)
+    jpos_mean = joint_pos_limits.mean(dim=-1)
+    jpos_range = joint_pos_limits[..., 1] - joint_pos_limits[..., 0]
+    soft_lower = jpos_mean - 0.5 * jpos_range * 0.5
+    soft_upper = jpos_mean + 0.5 * jpos_range * 0.5
+    joint_limit_penalty = -(
+        (soft_lower - joint_pos).clamp_min(0.0)
+        + (joint_pos - soft_upper).clamp_min(0.0)
+    ).sum(dim=1, keepdim=True)
+    expected = 2.0 * survival + 0.1 * joint_vel_penalty + 3.0 * joint_limit_penalty
+    assert torch.allclose(reward, expected)
+
+
 def test_reward_from_spec_matches_hdmi_multiplicative_group():
     state = playback_parity.MujocoRewardState(
         object_pos_w=torch.tensor([[0.0, 0.0, 0.0]]),
@@ -259,6 +297,32 @@ def test_reward_state_from_mujoco_scene_feeds_reward_spec():
     assert torch.allclose(state.object_pos_w, door.data.root_link_pos_w)
     assert torch.allclose(state.object_joint_pos, door.data.joint_pos[:, 0])
     assert reward.shape == (2, 2)
+
+
+def test_reward_state_from_mujoco_scene_preserves_resolved_joint_names_for_loco_rewards():
+    module = _mujoco_env_module()
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS["g1_29dof"]
+
+    scene = module.MJScene(SceneCfg(), num_envs=2, launch_viewer=False)
+    robot = scene["robot"]
+    joint_name_pattern = ".*hip_pitch_joint"
+    joint_ids, resolved_joint_names = robot.find_joints(joint_name_pattern)
+    joint_vel = robot.data.joint_vel.clone()
+    joint_vel[:, joint_ids] = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    robot.write_joint_state_to_sim(robot.data.joint_pos, joint_vel)
+
+    state = playback_parity.build_reward_state_from_scene(scene, joint_names=joint_name_pattern)
+    reward = playback_parity.compute_reward_from_spec(
+        {"loco": {"joint_vel_l2": {"weight": 1.0, "joint_names": joint_name_pattern}}},
+        state,
+    )
+
+    expected = -joint_vel[:, joint_ids].square().clamp_max(5.0).sum(dim=1, keepdim=True)
+    assert state.joint_names == resolved_joint_names
+    assert torch.allclose(reward, expected)
 
 
 def test_kinematic_motion_playback_parity_writes_robot_and_object_reference_order():

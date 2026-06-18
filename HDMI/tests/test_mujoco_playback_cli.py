@@ -63,6 +63,41 @@ def _write_motion_dir(tmp_path):
     return door.body_names[0], door.joint_names[0]
 
 
+def _write_robot_motion_dir(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    module = importlib.import_module("active_adaptation.envs.mujoco")
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS["g1_29dof"]
+
+    scene = module.MJScene(SceneCfg(), num_envs=1, launch_viewer=False)
+    robot = scene["robot"]
+
+    body_names = [robot.body_names[0]]
+    joint_names = [robot.joint_names[0]]
+    body_pos_w = np.array(
+        [
+            [[0.0, 0.0, 0.80]],
+            [[0.1, 0.0, 0.82]],
+        ],
+        dtype=np.float32,
+    )
+    body_quat_w = np.zeros((2, 1, 4), dtype=np.float32)
+    body_quat_w[..., 0] = 1.0
+    joint_pos = np.array([[0.10], [0.30]], dtype=np.float32)
+    np.savez_compressed(
+        tmp_path / "motion.npz",
+        body_pos_w=body_pos_w,
+        body_quat_w=body_quat_w,
+        joint_pos=joint_pos,
+    )
+    (tmp_path / "meta.json").write_text(
+        json.dumps({"body_names": body_names, "joint_names": joint_names, "fps": 50.0})
+    )
+    return body_names[0], joint_names[0]
+
+
 def _write_policy_bundle(tmp_path, action_dim):
     module = TensorDictModule(
         torch.nn.Linear(action_dim, action_dim, bias=False),
@@ -350,6 +385,38 @@ reward:
     summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert summary["reward_shape"] == [2, 1, 1]
     assert summary["reward_terms_used"] == ["object_tracking.eef_contact_exp"]
+    assert summary["reward_terms_skipped"] == []
+
+
+def test_mujoco_playback_parity_cli_uses_supported_loco_rewards(tmp_path, capsys):
+    motion_dir = tmp_path / "data/motion/test_robot"
+    root_body_name, joint_name = _write_robot_motion_dir(motion_dir)
+    task_yaml = tmp_path / "cfg/task/G1/hdmi/robot.yaml"
+    task_yaml.parent.mkdir(parents=True)
+    task_yaml.write_text(
+        f"""
+command:
+  data_path: data/motion/test_robot
+  root_body_name: {root_body_name}
+reward:
+  loco:
+    survival: {{weight: 1.0}}
+    joint_vel_l2: {{weight: 5.0e-4, joint_names: [{joint_name}]}}
+    joint_pos_limits: {{weight: 10.0, joint_names: [{joint_name}], soft_factor: 0.9}}
+""".strip()
+    )
+    script = _load_cli_module()
+
+    exit_code = script.main(["--task-yaml", str(task_yaml), "--steps", "0,1"])
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["reward_shape"] == [2, 1, 1]
+    assert summary["reward_terms_used"] == [
+        "loco.survival",
+        "loco.joint_vel_l2",
+        "loco.joint_pos_limits",
+    ]
     assert summary["reward_terms_skipped"] == []
 
 

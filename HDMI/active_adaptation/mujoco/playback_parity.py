@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -31,6 +32,8 @@ class MujocoRewardState:
     ref_joint_pos: torch.Tensor | None = None
     joint_vel: torch.Tensor | None = None
     ref_joint_vel: torch.Tensor | None = None
+    joint_pos_limits: torch.Tensor | None = None
+    joint_names: Sequence[str] | None = None
     object_pos_w: torch.Tensor | None = None
     ref_object_pos_w: torch.Tensor | None = None
     object_quat_w: torch.Tensor | None = None
@@ -133,14 +136,21 @@ def build_reward_state_from_scene(
 
     joint_pos = None
     joint_vel = None
+    joint_pos_limits = None
+    resolved_joint_names = None
     if joint_names is not None or ref_joint_pos is not None or ref_joint_vel is not None:
-        joint_indices = None if joint_names is None else _resolve_indices(robot, "find_joints", joint_names)
+        joint_indices = None
+        if joint_names is not None:
+            joint_indices, resolved_joint_names = _resolve_indices_and_names(robot, "find_joints", joint_names)
         if joint_indices is None:
             joint_pos = robot.data.joint_pos
             joint_vel = robot.data.joint_vel
+            joint_pos_limits = robot.data.soft_joint_pos_limits
+            resolved_joint_names = list(robot.joint_names)
         else:
             joint_pos = robot.data.joint_pos[:, joint_indices]
             joint_vel = robot.data.joint_vel[:, joint_indices]
+            joint_pos_limits = robot.data.soft_joint_pos_limits[:, joint_indices]
 
     object_pos_w = None
     object_quat_w = None
@@ -181,6 +191,8 @@ def build_reward_state_from_scene(
         ref_joint_pos=ref_joint_pos,
         joint_vel=joint_vel,
         ref_joint_vel=ref_joint_vel,
+        joint_pos_limits=joint_pos_limits,
+        joint_names=resolved_joint_names,
         object_pos_w=object_pos_w,
         ref_object_pos_w=ref_object_pos_w,
         object_quat_w=object_quat_w,
@@ -261,6 +273,11 @@ def compute_kinematic_motion_playback_parity(
             joint_names=reference.requested_joint_names,
             object_view=object_view,
         )
+        actual_joint_pos_limits = _gather_scene_joint_pos_limits(
+            robot=robot,
+            joint_names=reference.requested_joint_names,
+            object_view=object_view,
+        )
         ref_joint_vel = _expand_reference_frame(_reference_joint_vel(reference, step), scene.num_envs)
 
         reward = None
@@ -283,6 +300,7 @@ def compute_kinematic_motion_playback_parity(
                 ref_joint_pos=ref_joint_pos,
                 actual_joint_vel=actual_joint_vel,
                 ref_joint_vel=ref_joint_vel,
+                actual_joint_pos_limits=actual_joint_pos_limits,
                 object_name=object_name,
                 object_body_name=object_body_name or object_name,
                 object_joint_name=object_joint_name,
@@ -419,6 +437,20 @@ def _compute_reward_term(term_name: str, params: dict[str, Any], state: MujocoRe
             sigma=float(params.pop("sigma", 0.03)),
             tolerance=params.pop("tolerance", 0.0),
         )
+    if term_name == "survival":
+        return reward_parity.survival(_state_batch_reference(state))
+    if term_name == "joint_vel_l2":
+        joint_indices = _state_joint_indices(state, params.pop("joint_names", None))
+        return reward_parity.joint_velocity_l2(
+            joint_vel=_select_state_joint_tensor(_required_state_tensor(state, "joint_vel"), joint_indices),
+        )
+    if term_name == "joint_pos_limits":
+        joint_indices = _state_joint_indices(state, params.pop("joint_names", None))
+        return reward_parity.joint_position_limits(
+            joint_pos=_select_state_joint_tensor(_required_state_tensor(state, "joint_pos"), joint_indices),
+            joint_pos_limits=_select_state_joint_tensor(_required_state_tensor(state, "joint_pos_limits"), joint_indices),
+            soft_factor=float(params.pop("soft_factor", 0.9)),
+        )
     if term_name == "object_pos_tracking":
         return reward_parity.object_position_tracking(
             object_pos_w=_required_state_tensor(state, "object_pos_w"),
@@ -480,6 +512,54 @@ def _required_state_tensor(state: MujocoRewardState, name: str) -> torch.Tensor:
     return value
 
 
+def _state_batch_reference(state: MujocoRewardState) -> torch.Tensor:
+    for name in (
+        "joint_pos",
+        "joint_vel",
+        "actual_body_pos_w",
+        "root_pos_w",
+        "object_pos_w",
+        "contact_eef_pos_w",
+    ):
+        value = getattr(state, name)
+        if value is not None:
+            return value
+    raise ValueError("MujocoRewardState needs at least one tensor to infer reward batch size.")
+
+
+def _state_joint_indices(state: MujocoRewardState, joint_names: Any) -> list[int] | None:
+    if joint_names is None:
+        return None
+    if state.joint_names is None:
+        raise ValueError("MujocoRewardState.joint_names is required when reward term joint_names is set.")
+    return _matching_name_indices(joint_names, state.joint_names, "joint")
+
+
+def _select_state_joint_tensor(tensor: torch.Tensor, indices: list[int] | None) -> torch.Tensor:
+    if indices is None:
+        return tensor
+    return tensor[:, indices]
+
+
+def _matching_name_indices(name_keys: Any, available_names: Sequence[str], label: str) -> list[int]:
+    if isinstance(name_keys, (str, bytes)):
+        patterns = [str(name_keys)]
+    elif isinstance(name_keys, Sequence):
+        patterns = [str(name_key) for name_key in name_keys]
+    else:
+        raise ValueError(f"{label}_names must be a string or sequence, got {type(name_keys).__name__}.")
+
+    indices: list[int] = []
+    for pattern in patterns:
+        matches = [index for index, name in enumerate(available_names) if re.fullmatch(pattern, name)]
+        if not matches:
+            raise ValueError(f"No {label} names matched {pattern!r}.")
+        for index in matches:
+            if index not in indices:
+                indices.append(index)
+    return indices
+
+
 def _current_reference_frame(value: torch.Tensor | None, *, state_rank: int) -> torch.Tensor | None:
     if value is None:
         return None
@@ -493,6 +573,17 @@ def _resolve_indices(asset: Any, resolver_name: str, name_keys: str | Sequence[s
     if not indices:
         raise ValueError(f"No names matched {name_keys!r}.")
     return indices
+
+
+def _resolve_indices_and_names(
+    asset: Any,
+    resolver_name: str,
+    name_keys: str | Sequence[str],
+) -> tuple[list[int], list[str]]:
+    indices, names = getattr(asset, resolver_name)(name_keys, preserve_order=True)
+    if not indices:
+        raise ValueError(f"No names matched {name_keys!r}.")
+    return indices, list(names)
 
 
 def _resolve_single_index(asset: Any, resolver_name: str, name_key: str, label: str) -> int:
@@ -644,6 +735,22 @@ def _gather_scene_joint_vel(robot: Any, joint_names: Sequence[str], object_view:
     return torch.stack(columns, dim=1)
 
 
+def _gather_scene_joint_pos_limits(robot: Any, joint_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
+    robot_index = _name_to_index(robot.joint_names)
+    object_index = _name_to_index(object_view.joint_names) if object_view is not None else {}
+    robot_limits = robot.data.soft_joint_pos_limits
+    object_limits = object_view.data.soft_joint_pos_limits if object_view is not None else None
+    columns = []
+    for joint_name in joint_names:
+        if joint_name in robot_index:
+            columns.append(robot_limits[:, robot_index[joint_name]])
+        elif object_view is not None and joint_name in object_index:
+            columns.append(object_limits[:, object_index[joint_name]])
+        else:
+            raise ValueError(f"missing playback joint name in MuJoCo scene: {joint_name!r}.")
+    return torch.stack(columns, dim=1)
+
+
 def _gather_scene_body_pos_w(robot: Any, body_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
     return _gather_scene_body_tensor(robot, body_names, object_view, "body_link_pos_w")
 
@@ -700,6 +807,7 @@ def _build_kinematic_reward_state(
     ref_joint_pos: torch.Tensor,
     actual_joint_vel: torch.Tensor,
     ref_joint_vel: torch.Tensor,
+    actual_joint_pos_limits: torch.Tensor,
     object_name: str | None,
     object_body_name: str | None,
     object_joint_name: str | None,
@@ -788,6 +896,8 @@ def _build_kinematic_reward_state(
         ref_joint_pos=ref_joint_pos,
         joint_vel=actual_joint_vel,
         ref_joint_vel=ref_joint_vel,
+        joint_pos_limits=actual_joint_pos_limits,
+        joint_names=list(reference.requested_joint_names),
         object_pos_w=object_pos_w,
         ref_object_pos_w=ref_object_pos_w,
         object_quat_w=object_quat_w,

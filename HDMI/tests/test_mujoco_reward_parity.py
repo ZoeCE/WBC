@@ -71,6 +71,39 @@ def test_joint_position_tracking_product_matches_hdmi_formula():
     assert torch.allclose(reward, expected)
 
 
+def test_loco_common_rewards_match_hdmi_formulas():
+    joint_vel = torch.tensor([[1.0, -3.0, 10.0], [0.5, -0.5, 0.0]])
+
+    assert torch.allclose(reward_parity.survival(joint_vel), torch.ones(2, 1))
+    assert torch.allclose(
+        reward_parity.joint_velocity_l2(joint_vel),
+        -joint_vel.square().clamp_max(5.0).sum(dim=1, keepdim=True),
+    )
+
+    joint_pos = torch.tensor([[-0.9, 0.0, 1.8], [0.6, 1.6, 0.2]])
+    joint_pos_limits = torch.tensor(
+        [
+            [[-1.0, 1.0], [-2.0, 2.0], [0.0, 2.0]],
+            [[-1.0, 1.0], [-2.0, 2.0], [0.0, 2.0]],
+        ]
+    )
+
+    reward = reward_parity.joint_position_limits(
+        joint_pos=joint_pos,
+        joint_pos_limits=joint_pos_limits,
+        soft_factor=0.5,
+    )
+
+    jpos_mean = joint_pos_limits.mean(dim=-1)
+    jpos_range = joint_pos_limits[..., 1] - joint_pos_limits[..., 0]
+    soft_lower = jpos_mean - 0.5 * jpos_range * 0.5
+    soft_upper = jpos_mean + 0.5 * jpos_range * 0.5
+    violation_min = (soft_lower - joint_pos).clamp_min(0.0)
+    violation_max = (joint_pos - soft_upper).clamp_min(0.0)
+    expected = -(violation_min + violation_max).sum(dim=1, keepdim=True)
+    assert torch.allclose(reward, expected)
+
+
 def test_eef_contact_exp_matches_hdmi_contact_reward_formula():
     contact_eef_pos_w = torch.tensor(
         [

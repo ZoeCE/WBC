@@ -20,7 +20,9 @@ from .reward_parity import (
     eef_contact_all,
     eef_contact_exp,
     eef_contact_exp_max,
+    joint_position_limits,
     joint_position_tracking_product,
+    joint_velocity_l2,
     joint_velocity_tracking_product,
     keypoint_orientation_tracking_product,
     keypoint_position_tracking_product,
@@ -28,6 +30,7 @@ from .reward_parity import (
     object_joint_position_tracking,
     object_orientation_tracking,
     object_position_tracking,
+    survival,
 )
 
 __all__ = [
@@ -47,7 +50,9 @@ __all__ = [
     "eef_contact_all",
     "eef_contact_exp",
     "eef_contact_exp_max",
+    "joint_position_limits",
     "joint_position_tracking_product",
+    "joint_velocity_l2",
     "joint_velocity_tracking_product",
     "keypoint_orientation_tracking_product",
     "keypoint_position_tracking_product",
@@ -55,6 +60,7 @@ __all__ = [
     "object_joint_position_tracking",
     "object_orientation_tracking",
     "object_position_tracking",
+    "survival",
     "build_reward_state_from_scene",
     "compute_kinematic_motion_playback_parity",
     "compute_playback_parity",
