@@ -930,25 +930,35 @@ class MJContactSensorCfg:
     target: str
     body_names: Sequence[str] | None = None
     filter_body_names: Sequence[str] | None = None
+    history_length: int = 1
 
 
 @dataclass
 class MjContactData:
     net_forces_w: ArrayType = None
     force_matrix_w: ArrayType = None
+    net_forces_w_history: ArrayType = None
+    current_contact_time: ArrayType = None
+    current_air_time: ArrayType = None
+    last_contact_time: ArrayType = None
+    last_air_time: ArrayType = None
 
 
 class MjContactSensor:
+    contact_force_threshold = 1e-5
+
     def __init__(
         self,
         articulation: MJArticulation,
         body_names: Sequence[str] | None = None,
         filter_body_names: Sequence[str] | None = None,
+        history_length: int = 1,
     ):
         self.articulation = articulation
         self.body_indices, self.body_names = self._resolve_body_names(body_names)
         self.body_adrs_read = self.articulation.body_adrs_read[self.body_indices]
         self.filter_body_names = list(filter_body_names or [])
+        self.history_length = max(1, int(history_length))
         self.filter_body_adrs = np.array([
             mujoco.mj_name2id(self.articulation.mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
             for name in self.filter_body_names
@@ -959,6 +969,16 @@ class MjContactSensor:
         self._data = MjContactData(
             net_forces_w=torch.zeros(self.articulation.num_instances, len(self.body_names), 3),
             force_matrix_w=torch.zeros(self.articulation.num_instances, len(self.body_names), len(self.filter_body_names), 3),
+            net_forces_w_history=torch.zeros(
+                self.articulation.num_instances,
+                self.history_length,
+                len(self.body_names),
+                3,
+            ),
+            current_contact_time=torch.zeros(self.articulation.num_instances, len(self.body_names)),
+            current_air_time=torch.zeros(self.articulation.num_instances, len(self.body_names)),
+            last_contact_time=torch.zeros(self.articulation.num_instances, len(self.body_names)),
+            last_air_time=torch.zeros(self.articulation.num_instances, len(self.body_names)),
         )
     
     def find_bodies(self, name_keys: str | Sequence[str], preserve_order: bool = False):
@@ -966,12 +986,18 @@ class MjContactSensor:
 
     def update(self, dt: float):
         cfrc_ext = np.stack([data.cfrc_ext[self.body_adrs_read, :3].copy() for data in self.articulation.mj_datas])
-        self._data.net_forces_w = torch.as_tensor(cfrc_ext, dtype=torch.float32)
-        self._data.force_matrix_w = self._compute_force_matrix_w()
+        net_forces_w = torch.as_tensor(cfrc_ext, dtype=torch.float32)
+        force_matrix_w = self._compute_force_matrix_w()
+        self._data.net_forces_w = net_forces_w
+        self._data.force_matrix_w = force_matrix_w
+        self._update_contact_state(net_forces_w, force_matrix_w, float(dt))
 
     @property
     def data(self):
         return self._data
+
+    def compute_first_contact(self, dt: float) -> torch.Tensor:
+        return (self._data.current_contact_time > 0.0) & (self._data.current_contact_time <= float(dt) + 1e-8)
 
     def _resolve_body_names(self, body_names):
         if body_names is None:
@@ -1016,6 +1042,35 @@ class MjContactSensor:
 
         return matrix
 
+    def _update_contact_state(self, net_forces_w: torch.Tensor, force_matrix_w: torch.Tensor, dt: float) -> None:
+        self._data.net_forces_w_history = self._data.net_forces_w_history.roll(1, dims=1)
+        self._data.net_forces_w_history[:, 0] = net_forces_w
+
+        if self.filter_body_names:
+            contact_signal = force_matrix_w.norm(dim=-1).amax(dim=-1)
+        else:
+            contact_signal = net_forces_w.norm(dim=-1)
+        in_contact = contact_signal > self.contact_force_threshold
+        was_in_contact = self._data.current_contact_time > 0.0
+        previous_contact_time = self._data.current_contact_time.clone()
+        previous_air_time = self._data.current_air_time.clone()
+
+        dt_t = torch.full_like(self._data.current_contact_time, dt)
+        self._data.current_contact_time = torch.where(
+            in_contact,
+            self._data.current_contact_time + dt_t,
+            torch.zeros_like(self._data.current_contact_time),
+        )
+        self._data.current_air_time = torch.where(
+            in_contact,
+            torch.zeros_like(self._data.current_air_time),
+            self._data.current_air_time + dt_t,
+        )
+        first_contact = in_contact & ~was_in_contact
+        first_air = ~in_contact & was_in_contact
+        self._data.last_air_time = torch.where(first_contact, previous_air_time, self._data.last_air_time)
+        self._data.last_contact_time = torch.where(first_air, previous_contact_time, self._data.last_contact_time)
+
 
 class MJScene:
     def __init__(self, cfg, num_envs: int = 1, launch_viewer: bool = True, env_spacing: float = 0.0):
@@ -1051,13 +1106,14 @@ class MJScene:
         for asset_name, asset_cfg in cfg_items:
             if isinstance(asset_cfg, str):
                 target = self.articulations[asset_cfg]
-                self.sensors[asset_name] = MjContactSensor(target)
+                self.sensors[asset_name] = MjContactSensor(target, history_length=3)
             elif isinstance(asset_cfg, MJContactSensorCfg):
                 target = self.articulations[asset_cfg.target]
                 self.sensors[asset_name] = MjContactSensor(
                     target,
                     body_names=asset_cfg.body_names,
                     filter_body_names=asset_cfg.filter_body_names,
+                    history_length=asset_cfg.history_length,
                 )
 
         self.viewer = None

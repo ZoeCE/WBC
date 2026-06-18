@@ -1,5 +1,6 @@
 import importlib
 
+import numpy as np
 import torch
 
 
@@ -42,6 +43,50 @@ def test_mj_scene_exposes_rigid_object_view_from_object_scene():
     assert scene["box"].joint_names == []
     assert scene["box"].data.root_link_pos_w.shape == (2, 3)
     assert scene["box"].data.body_link_pos_w.shape == (2, 1, 3)
+
+
+def test_mj_contact_sensor_tracks_contact_time_air_time_and_force_history():
+    module = _mujoco_env_module()
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS["g1_29dof"]
+        contact_forces = "robot"
+
+    scene = module.MJScene(SceneCfg(), num_envs=1, launch_viewer=False)
+    sensor = scene.sensors["contact_forces"]
+    body_addr = int(sensor.body_adrs_read[0])
+
+    def write_force(force_x):
+        data = sensor.articulation.mj_datas[0]
+        data.cfrc_ext[:, :] = 0.0
+        data.cfrc_ext[body_addr, :3] = np.array([force_x, 0.0, 0.0])
+
+    write_force(0.0)
+    sensor.update(0.1)
+    assert torch.equal(sensor.compute_first_contact(0.1), torch.zeros(1, len(sensor.body_names), dtype=torch.bool))
+    assert torch.allclose(sensor.data.current_contact_time[:, 0], torch.tensor([0.0]))
+    assert torch.allclose(sensor.data.current_air_time[:, 0], torch.tensor([0.1]))
+
+    write_force(3.0)
+    sensor.update(0.1)
+    assert torch.equal(sensor.compute_first_contact(0.1)[:, 0], torch.tensor([True]))
+    assert torch.allclose(sensor.data.current_contact_time[:, 0], torch.tensor([0.1]))
+    assert torch.allclose(sensor.data.last_air_time[:, 0], torch.tensor([0.1]))
+    assert torch.allclose(sensor.data.net_forces_w_history[:, 0, 0], torch.tensor([[3.0, 0.0, 0.0]]))
+
+    write_force(4.0)
+    sensor.update(0.1)
+    assert torch.equal(sensor.compute_first_contact(0.1)[:, 0], torch.tensor([False]))
+    assert torch.allclose(sensor.data.current_contact_time[:, 0], torch.tensor([0.2]))
+    assert torch.allclose(sensor.data.net_forces_w_history[:, 0, 0], torch.tensor([[4.0, 0.0, 0.0]]))
+    assert torch.allclose(sensor.data.net_forces_w_history[:, 1, 0], torch.tensor([[3.0, 0.0, 0.0]]))
+
+    write_force(0.0)
+    sensor.update(0.1)
+    assert torch.allclose(sensor.data.current_contact_time[:, 0], torch.tensor([0.0]))
+    assert torch.allclose(sensor.data.current_air_time[:, 0], torch.tensor([0.1]))
+    assert torch.allclose(sensor.data.last_contact_time[:, 0], torch.tensor([0.2]))
 
 
 def test_mj_scene_exposes_articulated_object_view_and_filtered_contact_sensor():
