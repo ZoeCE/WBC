@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 
 import numpy as np
+import torch
+import yaml
+from tensordict.nn import TensorDictModule
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +60,32 @@ def _write_motion_dir(tmp_path):
         json.dumps({"body_names": body_names, "joint_names": joint_names, "fps": 50.0})
     )
     return door.body_names[0], door.joint_names[0]
+
+
+def _write_policy_bundle(tmp_path, action_dim):
+    module = TensorDictModule(
+        torch.nn.Linear(action_dim, action_dim, bias=False),
+        in_keys=["policy"],
+        out_keys=["action"],
+    )
+    module.module.weight.data.copy_(torch.eye(action_dim))
+    policy_path = tmp_path / "policy-test-final.pt"
+    torch.save(module, policy_path)
+    (tmp_path / "policy-test-final.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "observation": {
+                    "policy": {
+                        "applied_action": {},
+                    },
+                },
+                "action_scale": 0.5,
+                "policy_joint_names": [f"j{i}" for i in range(action_dim)],
+                "default_joint_pos": 0.0,
+            }
+        )
+    )
+    return policy_path
 
 
 def test_mujoco_playback_parity_cli_prints_json_summary(tmp_path, capsys):
@@ -191,3 +220,33 @@ reward:
     assert summary["envs"] == 1
     assert summary["reward_shape"] == [2, 1, 1]
     assert summary["q_l2_max"] < 1e-5
+
+
+def test_mujoco_playback_parity_cli_reports_policy_action_summary(tmp_path, capsys):
+    object_body_name, object_joint_name = _write_motion_dir(tmp_path)
+    policy_path = _write_policy_bundle(tmp_path, action_dim=2)
+    script = _load_cli_module()
+
+    exit_code = script.main(
+        [
+            "--motion-dir",
+            str(tmp_path),
+            "--object-name",
+            "door",
+            "--object-body-name",
+            object_body_name,
+            "--object-joint-name",
+            object_joint_name,
+            "--policy-path",
+            str(policy_path),
+            "--steps",
+            "0,1",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["policy_path"] == str(policy_path)
+    assert summary["policy_action_shape"] == [2, 1, 2]
+    assert summary["policy_joint_target_shape"] == [2, 1, 2]
+    assert summary["policy_action_max_abs"] == 0.0

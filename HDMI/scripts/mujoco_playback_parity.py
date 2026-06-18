@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import torch
 import yaml
 
 
@@ -15,6 +16,8 @@ if str(HDMI_ROOT) not in sys.path:
 from active_adaptation.assets_mjcf import ROBOTS
 from active_adaptation.mujoco import (
     MujocoMotionReference,
+    MujocoPolicyBundle,
+    MujocoPolicyState,
     PlaybackParityMetrics,
     compute_kinematic_motion_playback_parity,
 )
@@ -45,6 +48,7 @@ def run_parity(
     steps: Sequence[int] | None = None,
     num_envs: int = 1,
     reward_config: Mapping[str, Any] | None = None,
+    policy_path: str | Path | None = None,
 ) -> dict[str, Any]:
     motion_dir = Path(motion_dir)
     meta = _load_motion_meta(motion_dir)
@@ -89,6 +93,15 @@ def run_parity(
             "root_body_name": root_body_name,
         }
     )
+    if policy_path is not None:
+        summary.update(
+            run_policy_playback_smoke(
+                policy_path=policy_path,
+                reference=reference,
+                steps=steps,
+                num_envs=num_envs,
+            )
+        )
     return summary
 
 
@@ -134,6 +147,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             steps=_parse_steps(args.steps),
             num_envs=args.num_envs,
             reward_config=reward_config,
+            policy_path=args.policy_path,
         )
     print(json.dumps(summary, sort_keys=True))
     return 0
@@ -158,6 +172,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument("--reward-config-json", default=None)
     parser.add_argument("--task-yaml", default=None, help="HDMI task YAML. Its reward section is used for playback.")
+    parser.add_argument("--policy-path", default=None, help="Exported HDMI policy .pt to smoke-run on playback states.")
     return parser.parse_args(argv)
 
 
@@ -258,6 +273,101 @@ def _load_reward_config_from_args(
 
 def load_task_config(task_yaml: str | Path) -> dict[str, Any]:
     return _load_task_yaml_with_defaults(Path(task_yaml))
+
+
+def run_policy_playback_smoke(
+    *,
+    policy_path: str | Path,
+    reference: MujocoMotionReference,
+    steps: Sequence[int] | None,
+    num_envs: int,
+) -> dict[str, Any]:
+    bundle = MujocoPolicyBundle.load(policy_path)
+    steps_t = _normalize_policy_steps(steps, reference.num_steps)
+    action_history = torch.zeros(num_envs, bundle.action_dim, _policy_action_history_steps(bundle))
+    applied_action = torch.zeros(num_envs, bundle.action_dim)
+    default_joint_pos = bundle.default_joint_pos.unsqueeze(0).expand(num_envs, -1)
+
+    raw_actions: list[torch.Tensor] = []
+    joint_targets: list[torch.Tensor] = []
+    for index, step in enumerate(steps_t.tolist()):
+        state = _policy_state_from_reference(
+            reference=reference,
+            step=step,
+            num_envs=num_envs,
+            joint_pos=default_joint_pos,
+            applied_action=applied_action,
+            action_history=action_history,
+        )
+        if index == 0:
+            bundle.reset(state)
+        else:
+            bundle.update(state)
+        action = bundle.act(state, is_init=(index == 0))
+        raw_action = action.raw_action.detach().cpu()
+        raw_actions.append(raw_action)
+        joint_targets.append(action.joint_position_target.detach().cpu())
+
+        applied_action = raw_action
+        action_history = action_history.roll(1, dims=2)
+        action_history[:, :, 0] = raw_action
+
+    actions_t = torch.stack(raw_actions)
+    targets_t = torch.stack(joint_targets)
+    return {
+        "policy_path": str(policy_path),
+        "policy_action_shape": list(actions_t.shape),
+        "policy_joint_target_shape": list(targets_t.shape),
+        "policy_action_mean": float(actions_t.mean().item()),
+        "policy_action_max_abs": float(actions_t.abs().max().item()),
+        "policy_joint_target_mean": float(targets_t.mean().item()),
+    }
+
+
+def _policy_state_from_reference(
+    *,
+    reference: MujocoMotionReference,
+    step: int,
+    num_envs: int,
+    joint_pos: torch.Tensor,
+    applied_action: torch.Tensor,
+    action_history: torch.Tensor,
+) -> MujocoPolicyState:
+    fields = reference.observation_fields_at(torch.full((num_envs,), step, dtype=torch.long))
+    zeros_ang_vel = torch.zeros(num_envs, 3, dtype=joint_pos.dtype)
+    projected_gravity = torch.zeros(num_envs, 3, dtype=joint_pos.dtype)
+    projected_gravity[:, 2] = -1.0
+    return MujocoPolicyState(
+        root_ang_vel_b=zeros_ang_vel,
+        projected_gravity_b=projected_gravity,
+        joint_pos=joint_pos,
+        joint_pos_offset=joint_pos,
+        applied_action=applied_action,
+        action_history=action_history,
+        ref_body_pos_future_w=fields.ref_body_pos_future_w,
+        ref_root_pos_w=fields.ref_root_pos_w,
+        ref_root_quat_w=fields.ref_root_quat_w,
+        ref_joint_pos_future=fields.ref_joint_pos_future,
+        motion_t=fields.motion_t,
+        motion_len=fields.motion_len,
+        robot_root_pos_w=fields.ref_root_pos_w,
+        robot_root_quat_w=fields.ref_root_quat_w,
+    )
+
+
+def _normalize_policy_steps(steps: Sequence[int] | None, num_steps: int) -> torch.Tensor:
+    if steps is None:
+        return torch.arange(num_steps, dtype=torch.long)
+    return torch.as_tensor(list(steps), dtype=torch.long)
+
+
+def _policy_action_history_steps(bundle: MujocoPolicyBundle) -> int:
+    max_steps = 1
+    for group_cfg in bundle.observation_builder.observation_cfg.values():
+        for obs_key, params in group_cfg.items():
+            if obs_key == "prev_actions":
+                max_steps = max(max_steps, int((params or {}).get("steps", 1)))
+    return max_steps
 
 
 def load_task_reward_config(task_yaml: str | Path) -> dict[str, Any]:
