@@ -101,3 +101,57 @@ def test_mujoco_playback_parity_cli_prints_json_summary(tmp_path, capsys):
     assert summary["body_pos_l2_max"] >= 0.0
     assert summary["body_pos_l2_mean"] <= summary["body_pos_l2_max"]
     assert summary["reward_mean"] > 0.99
+
+
+def test_mujoco_playback_parity_cli_loads_task_yaml_reward(tmp_path, capsys):
+    object_body_name, object_joint_name = _write_motion_dir(tmp_path)
+    cfg_dir = tmp_path / "cfg/task"
+    (cfg_dir / "base").mkdir(parents=True)
+    (cfg_dir / "base/test-base.yaml").write_text(
+        """
+reward:
+  tracking:
+    joint_pos_tracking_product: {weight: 1.0, sigma: 0.25}
+    joint_vel_tracking_product: {weight: 1.0, sigma: 0.25}
+  object_tracking:
+    object_pos_tracking: {enabled: false}
+""".strip()
+    )
+    task_yaml = cfg_dir / "door.yaml"
+    task_yaml.write_text(
+        """
+defaults:
+  - base/test-base
+  - _self_
+reward:
+  object_tracking:
+    object_joint_pos_tracking: {weight: 1.0, sigma: 0.25}
+""".strip()
+    )
+    script = _load_cli_module()
+
+    exit_code = script.main(
+        [
+            "--motion-dir",
+            str(tmp_path),
+            "--object-name",
+            "door",
+            "--object-body-name",
+            object_body_name,
+            "--object-joint-name",
+            object_joint_name,
+            "--task-yaml",
+            str(task_yaml),
+            "--steps",
+            "0,1",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["reward_shape"] == [2, 1, 2]
+    assert summary["reward_terms_used"] == [
+        "tracking.joint_pos_tracking_product",
+        "object_tracking.object_joint_pos_tracking",
+    ]
+    assert summary["reward_terms_skipped"] == ["tracking.joint_vel_tracking_product"]
