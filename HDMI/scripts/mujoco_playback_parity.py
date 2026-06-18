@@ -23,7 +23,10 @@ from active_adaptation.mujoco import (
     compute_kinematic_motion_playback_parity,
     run_mujoco_policy_rollout,
 )
-from active_adaptation.mujoco.task_mapping import validate_task_motion_mapping
+from active_adaptation.mujoco.task_mapping import (
+    validate_policy_task_motion_mapping,
+    validate_task_motion_mapping,
+)
 
 
 KINEMATIC_REWARD_TERMS = {
@@ -505,17 +508,39 @@ def _task_mapping_report_from_args(
         )
     ):
         return None
+    if args.policy_path is not None:
+        return validate_policy_task_motion_mapping(
+            _policy_config_path(args.policy_path),
+            args.task_yaml,
+            robot_name=args.robot_name,
+        )
     return validate_task_motion_mapping(args.task_yaml, robot_name=args.robot_name)
 
 
 def _task_mapping_summary(mapping_report) -> dict[str, Any]:
-    return {
-        "task_object_body_name": mapping_report.task_object_body_name,
-        "reference_object_body_name": mapping_report.reference_object_body_name,
-        "asset_object_body_names": list(mapping_report.asset_object_body_names),
-        "asset_object_joint_names": list(mapping_report.asset_object_joint_names),
-        "extra_object_names": list(mapping_report.extra_object_names),
+    task_report = getattr(mapping_report, "task_report", mapping_report)
+    summary = {
+        "task_object_body_name": task_report.task_object_body_name,
+        "reference_object_body_name": task_report.reference_object_body_name,
+        "asset_object_body_names": list(task_report.asset_object_body_names),
+        "asset_object_joint_names": list(task_report.asset_object_joint_names),
+        "extra_object_names": list(task_report.extra_object_names),
     }
+    if hasattr(mapping_report, "policy_config_path"):
+        summary.update(
+            {
+                "policy_config_path": str(mapping_report.policy_config_path),
+                "policy_body_names": list(mapping_report.policy_body_names),
+                "policy_joint_names": list(mapping_report.policy_joint_names),
+                "policy_body_name_mapping": [
+                    entry.to_dict() for entry in mapping_report.policy_body_name_mapping
+                ],
+                "policy_joint_name_mapping": [
+                    entry.to_dict() for entry in mapping_report.policy_joint_name_mapping
+                ],
+            }
+        )
+    return summary
 
 
 def _resolve_contact_inputs(

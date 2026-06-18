@@ -383,6 +383,57 @@ reward:
     assert summary["q_l2_max"] < 1e-5
 
 
+def test_mujoco_playback_parity_cli_reports_policy_motion_mjcf_name_mapping(tmp_path, capsys):
+    motion_dir = tmp_path / "data/motion/test_door"
+    object_body_name, object_joint_name = _write_motion_dir(motion_dir)
+    meta = json.loads((motion_dir / "meta.json").read_text())
+    policy_path = _write_rollout_policy_bundle(tmp_path, meta["joint_names"][0])
+    policy_cfg_path = policy_path.with_suffix(".yaml")
+    policy_cfg = yaml.safe_load(policy_cfg_path.read_text())
+    policy_cfg["isaac_body_names"] = [meta["body_names"][0]]
+    policy_cfg["isaac_joint_names"] = [meta["joint_names"][0]]
+    policy_cfg_path.write_text(yaml.safe_dump(policy_cfg))
+    task_yaml = tmp_path / "cfg/task/G1/hdmi/door.yaml"
+    task_yaml.parent.mkdir(parents=True)
+    task_yaml.write_text(
+        f"""
+command:
+  data_path: data/motion/test_door
+  root_body_name: {meta["body_names"][0]}
+  object_asset_name: door
+  object_body_name: {object_body_name}
+  object_joint_name: {object_joint_name}
+reward:
+  object_tracking:
+    object_joint_pos_tracking: {{weight: 1.0, sigma: 0.25}}
+""".strip()
+    )
+    script = _load_cli_module()
+
+    exit_code = script.main(
+        [
+            "--task-yaml",
+            str(task_yaml),
+            "--policy-path",
+            str(policy_path),
+            "--steps",
+            "0,1",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["policy_config_path"] == str(policy_cfg_path)
+    assert summary["policy_body_name_mapping"][0]["name"] == meta["body_names"][0]
+    assert summary["policy_body_name_mapping"][0]["policy_index"] == 0
+    assert summary["policy_body_name_mapping"][0]["motion_index"] == 0
+    assert isinstance(summary["policy_body_name_mapping"][0]["mujoco_index"], int)
+    assert summary["policy_joint_name_mapping"][0]["name"] == meta["joint_names"][0]
+    assert summary["policy_joint_name_mapping"][0]["policy_index"] == 0
+    assert summary["policy_joint_name_mapping"][0]["motion_index"] == 0
+    assert isinstance(summary["policy_joint_name_mapping"][0]["mujoco_index"], int)
+
+
 def test_mujoco_playback_parity_cli_reports_task_motion_body_mapping(tmp_path, capsys):
     motion_dir = tmp_path / "data/motion/test_door"
     reference_object_body_name, object_joint_name = _write_motion_dir(motion_dir)
