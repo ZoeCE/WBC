@@ -292,6 +292,7 @@ def run_policy_playback_smoke(
     joint_targets: list[torch.Tensor] = []
     for index, step in enumerate(steps_t.tolist()):
         state = _policy_state_from_reference(
+            bundle=bundle,
             reference=reference,
             step=step,
             num_envs=num_envs,
@@ -326,6 +327,7 @@ def run_policy_playback_smoke(
 
 def _policy_state_from_reference(
     *,
+    bundle: MujocoPolicyBundle,
     reference: MujocoMotionReference,
     step: int,
     num_envs: int,
@@ -337,6 +339,13 @@ def _policy_state_from_reference(
     zeros_ang_vel = torch.zeros(num_envs, 3, dtype=joint_pos.dtype)
     projected_gravity = torch.zeros(num_envs, 3, dtype=joint_pos.dtype)
     projected_gravity[:, 2] = -1.0
+    object_state = _policy_object_state_from_reference(
+        bundle=bundle,
+        reference=reference,
+        step=step,
+        num_envs=num_envs,
+        dtype=joint_pos.dtype,
+    )
     return MujocoPolicyState(
         root_ang_vel_b=zeros_ang_vel,
         projected_gravity_b=projected_gravity,
@@ -352,6 +361,7 @@ def _policy_state_from_reference(
         motion_len=fields.motion_len,
         robot_root_pos_w=fields.ref_root_pos_w,
         robot_root_quat_w=fields.ref_root_quat_w,
+        **object_state,
     )
 
 
@@ -368,6 +378,103 @@ def _policy_action_history_steps(bundle: MujocoPolicyBundle) -> int:
             if obs_key == "prev_actions":
                 max_steps = max(max_steps, int((params or {}).get("steps", 1)))
     return max_steps
+
+
+def _policy_object_state_from_reference(
+    *,
+    bundle: MujocoPolicyBundle,
+    reference: MujocoMotionReference,
+    step: int,
+    num_envs: int,
+    dtype: torch.dtype,
+) -> dict[str, torch.Tensor]:
+    object_name = _first_policy_observation_object_name(bundle, ("object_xy_b", "object_heading_b"))
+    contact_cfg = _first_policy_observation_cfg(bundle, "ref_contact_pos_b")
+    if object_name is None and contact_cfg is not None:
+        object_name = contact_cfg.get("object_name")
+
+    state: dict[str, torch.Tensor] = {}
+    if object_name is not None:
+        object_pos_w, object_quat_w = _reference_body_pose(
+            reference=reference,
+            body_name=str(object_name),
+            step=step,
+            num_envs=num_envs,
+            dtype=dtype,
+        )
+        state["object_pos_w"] = object_pos_w
+        state["object_quat_w"] = object_quat_w
+
+    if contact_cfg is not None:
+        contact_object_name = contact_cfg.get("object_name", object_name)
+        if contact_object_name is None:
+            raise ValueError("ref_contact_pos_b policy observation requires object_name.")
+        contact_object_pos_w, contact_object_quat_w = _reference_body_pose(
+            reference=reference,
+            body_name=str(contact_object_name),
+            step=step,
+            num_envs=num_envs,
+            dtype=dtype,
+        )
+        offsets = torch.as_tensor(
+            contact_cfg.get("contact_target_pos_offset", [[0.0, 0.0, 0.0]]),
+            dtype=dtype,
+        )
+        if offsets.ndim == 1:
+            offsets = offsets.unsqueeze(0)
+        if offsets.shape[-1] != 3:
+            raise ValueError(f"contact_target_pos_offset must end in xyz dim 3, got {tuple(offsets.shape)}.")
+        offsets = offsets.unsqueeze(0).expand(num_envs, -1, -1)
+        state["contact_target_pos_w"] = contact_object_pos_w[:, None, :] + _quat_rotate(
+            contact_object_quat_w[:, None, :],
+            offsets,
+        )
+    return state
+
+
+def _first_policy_observation_object_name(
+    bundle: MujocoPolicyBundle,
+    obs_keys: Sequence[str],
+) -> str | None:
+    for obs_key in obs_keys:
+        obs_cfg = _first_policy_observation_cfg(bundle, obs_key)
+        if obs_cfg is not None and obs_cfg.get("object_name") is not None:
+            return str(obs_cfg["object_name"])
+    return None
+
+
+def _first_policy_observation_cfg(bundle: MujocoPolicyBundle, obs_key: str) -> Mapping[str, Any] | None:
+    for group_cfg in bundle.observation_builder.observation_cfg.values():
+        if obs_key not in group_cfg:
+            continue
+        obs_cfg = group_cfg[obs_key] or {}
+        if not isinstance(obs_cfg, Mapping):
+            raise ValueError(f"Policy observation {obs_key!r} config must be a mapping.")
+        return obs_cfg
+    return None
+
+
+def _reference_body_pose(
+    *,
+    reference: MujocoMotionReference,
+    body_name: str,
+    step: int,
+    num_envs: int,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if body_name not in reference.body_names:
+        raise ValueError(f"Policy observation body {body_name!r} is missing from motion metadata.")
+    body_index = reference.body_names.index(body_name)
+    body_pos_w = reference.body_pos_w[step, body_index].to(dtype=dtype).unsqueeze(0).expand(num_envs, -1)
+    body_quat_w = reference.body_quat_w[step, body_index].to(dtype=dtype).unsqueeze(0).expand(num_envs, -1)
+    return body_pos_w, body_quat_w
+
+
+def _quat_rotate(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    quat = quat.expand(*vec.shape[:-1], 4)
+    xyz = quat[..., 1:]
+    t = torch.linalg.cross(xyz, vec, dim=-1) * 2
+    return vec + quat[..., 0:1] * t + torch.linalg.cross(xyz, t, dim=-1)
 
 
 def load_task_reward_config(task_yaml: str | Path) -> dict[str, Any]:
