@@ -120,6 +120,20 @@ def test_play_mujoco_asset_meta_uses_mjcf_cfg_without_isaac_assets_import():
     }
 
 
+def test_play_export_policy_asset_metadata_records_body_and_joint_order():
+    script = _load_play_module()
+    policy_config = {}
+    asset_meta = {
+        "joint_names_isaac": ["joint_a", "joint_b"],
+        "body_names_isaac": ["pelvis", "left_foot"],
+    }
+
+    script._annotate_policy_asset_metadata(policy_config, asset_meta)
+
+    assert policy_config["isaac_joint_names"] == ["joint_a", "joint_b"]
+    assert policy_config["isaac_body_names"] == ["pelvis", "left_foot"]
+
+
 def test_play_export_allows_policy_without_command_observation_group():
     script = _load_play_module()
 

@@ -87,9 +87,9 @@ def main(cfg):
         ## action
         policy_config["action_scale"] = dict_cfg["task"]["action"]["action_scaling"]
 
-        ## joint names and stiffness/damping
+        ## joint/body names and stiffness/damping
         asset_meta = _get_policy_asset_meta(env)
-        policy_config["isaac_joint_names"] = asset_meta["joint_names_isaac"]
+        _annotate_policy_asset_metadata(policy_config, asset_meta)
         joint_kp, joint_kd = {}, {}
         for actuator_name, actuator in asset_meta["actuators"].items():
             stiffness = actuator["stiffness"]
@@ -304,6 +304,11 @@ def _get_policy_asset_meta(env):
     from active_adaptation.assets import get_asset_meta
 
     return get_asset_meta(robot)
+
+
+def _annotate_policy_asset_metadata(policy_config, asset_meta):
+    policy_config["isaac_joint_names"] = [str(name) for name in asset_meta["joint_names_isaac"]]
+    policy_config["isaac_body_names"] = [str(name) for name in asset_meta["body_names_isaac"]]
 
 
 def _get_exported_command_observation_group(observation_cfg):
