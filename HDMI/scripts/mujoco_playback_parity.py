@@ -43,6 +43,9 @@ KINEMATIC_REWARD_TERMS = {
     "survival",
     "joint_vel_l2",
     "joint_pos_limits",
+    "feet_slip",
+    "impact_force_l2",
+    "feet_air_time",
     "object_pos_tracking",
     "object_ori_tracking",
     "object_joint_pos_tracking",
@@ -800,6 +803,7 @@ def _build_scene(
                         filter_body_names=[object_body_name],
                     ),
                 )
+    SceneCfg.contact_forces = "robot"
     return mujoco_env.MJScene(SceneCfg(), num_envs=num_envs, launch_viewer=False)
 
 

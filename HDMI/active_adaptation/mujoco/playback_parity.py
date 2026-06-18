@@ -24,6 +24,7 @@ class MujocoRewardState:
     ref_body_lin_vel_w: torch.Tensor | None = None
     actual_body_ang_vel_w: torch.Tensor | None = None
     ref_body_ang_vel_w: torch.Tensor | None = None
+    body_names: Sequence[str] | None = None
     root_pos_w: torch.Tensor | None = None
     root_quat_w: torch.Tensor | None = None
     ref_root_pos_w: torch.Tensor | None = None
@@ -44,6 +45,13 @@ class MujocoRewardState:
     contact_target_pos_w: torch.Tensor | None = None
     eef_contact_forces_b: torch.Tensor | None = None
     ref_object_contact: torch.Tensor | None = None
+    contact_body_names: Sequence[str] | None = None
+    contact_current_contact_time: torch.Tensor | None = None
+    contact_last_air_time: torch.Tensor | None = None
+    contact_first_contact: torch.Tensor | None = None
+    contact_net_forces_w_history: torch.Tensor | None = None
+    default_mass_total: torch.Tensor | None = None
+    is_standing_env: torch.Tensor | None = None
 
 
 def compute_playback_parity(
@@ -115,6 +123,7 @@ def build_reward_state_from_scene(
     actual_body_quat_w = None
     actual_body_lin_vel_w = None
     actual_body_ang_vel_w = None
+    resolved_body_names = None
     if (
         body_names is not None
         or ref_body_pos_w is not None
@@ -122,12 +131,15 @@ def build_reward_state_from_scene(
         or ref_body_lin_vel_w is not None
         or ref_body_ang_vel_w is not None
     ):
-        body_indices = None if body_names is None else _resolve_indices(robot, "find_bodies", body_names)
+        body_indices = None
+        if body_names is not None:
+            body_indices, resolved_body_names = _resolve_indices_and_names(robot, "find_bodies", body_names)
         if body_indices is None:
             actual_body_pos_w = robot.data.body_link_pos_w
             actual_body_quat_w = robot.data.body_link_quat_w
             actual_body_lin_vel_w = robot.data.body_com_lin_vel_w
             actual_body_ang_vel_w = robot.data.body_com_ang_vel_w
+            resolved_body_names = list(robot.body_names)
         else:
             actual_body_pos_w = robot.data.body_link_pos_w[:, body_indices]
             actual_body_quat_w = robot.data.body_link_quat_w[:, body_indices]
@@ -183,6 +195,7 @@ def build_reward_state_from_scene(
         ref_body_lin_vel_w=ref_body_lin_vel_w,
         actual_body_ang_vel_w=actual_body_ang_vel_w,
         ref_body_ang_vel_w=ref_body_ang_vel_w,
+        body_names=resolved_body_names,
         root_pos_w=robot.data.root_link_pos_w,
         root_quat_w=robot.data.root_link_quat_w,
         ref_root_pos_w=ref_root_pos_w,
@@ -203,6 +216,7 @@ def build_reward_state_from_scene(
         contact_target_pos_w=contact_target_pos_w,
         eef_contact_forces_b=eef_contact_forces_b,
         ref_object_contact=ref_object_contact,
+        **_contact_reward_state(scene, robot),
     )
 
 
@@ -451,6 +465,43 @@ def _compute_reward_term(term_name: str, params: dict[str, Any], state: MujocoRe
             joint_pos_limits=_select_state_joint_tensor(_required_state_tensor(state, "joint_pos_limits"), joint_indices),
             soft_factor=float(params.pop("soft_factor", 0.9)),
         )
+    if term_name == "feet_slip":
+        body_names = _required_param(params, "body_names", term_name)
+        body_indices = _state_body_indices(state, body_names)
+        contact_indices = _state_contact_body_indices(state, body_names)
+        return reward_parity.feet_slip(
+            body_lin_vel_w=_select_state_body_tensor(
+                _required_state_tensor(state, "actual_body_lin_vel_w"),
+                body_indices,
+            ),
+            current_contact_time=_select_state_body_tensor(
+                _required_state_tensor(state, "contact_current_contact_time"),
+                contact_indices,
+            ),
+            tolerance=float(params.pop("tolerance", 0.0)),
+        )
+    if term_name == "impact_force_l2":
+        body_names = _required_param(params, "body_names", term_name)
+        contact_indices = _state_contact_body_indices(state, body_names)
+        return reward_parity.impact_force_l2(
+            net_forces_w_history=_select_state_contact_history(
+                _required_state_tensor(state, "contact_net_forces_w_history"),
+                contact_indices,
+            ),
+            first_contact=_select_state_body_tensor(_required_state_tensor(state, "contact_first_contact"), contact_indices),
+            default_mass_total=_required_state_tensor(state, "default_mass_total"),
+        )
+    if term_name == "feet_air_time":
+        body_names = _required_param(params, "body_names", term_name)
+        contact_indices = _state_contact_body_indices(state, body_names)
+        params.pop("soft_discount", None)
+        params.pop("condition_on_linvel", None)
+        return reward_parity.feet_air_time(
+            last_air_time=_select_state_body_tensor(_required_state_tensor(state, "contact_last_air_time"), contact_indices),
+            first_contact=_select_state_body_tensor(_required_state_tensor(state, "contact_first_contact"), contact_indices),
+            thres=float(params.pop("thres")),
+            is_standing_env=state.is_standing_env,
+        )
     if term_name == "object_pos_tracking":
         return reward_parity.object_position_tracking(
             object_pos_w=_required_state_tensor(state, "object_pos_w"),
@@ -535,10 +586,60 @@ def _state_joint_indices(state: MujocoRewardState, joint_names: Any) -> list[int
     return _matching_name_indices(joint_names, state.joint_names, "joint")
 
 
+def _state_body_indices(state: MujocoRewardState, body_names: Any) -> list[int]:
+    if state.body_names is None:
+        raise ValueError("MujocoRewardState.body_names is required when reward term body_names is set.")
+    return _matching_name_indices(body_names, state.body_names, "body")
+
+
+def _state_contact_body_indices(state: MujocoRewardState, body_names: Any) -> list[int]:
+    if state.contact_body_names is None:
+        raise ValueError("MujocoRewardState.contact_body_names is required when reward term body_names is set.")
+    return _matching_name_indices(body_names, state.contact_body_names, "contact body")
+
+
 def _select_state_joint_tensor(tensor: torch.Tensor, indices: list[int] | None) -> torch.Tensor:
     if indices is None:
         return tensor
     return tensor[:, indices]
+
+
+def _select_state_body_tensor(tensor: torch.Tensor, indices: list[int]) -> torch.Tensor:
+    return tensor[:, indices]
+
+
+def _select_state_contact_history(tensor: torch.Tensor, indices: list[int]) -> torch.Tensor:
+    return tensor[:, :, indices]
+
+
+def _required_param(params: dict[str, Any], name: str, term_name: str) -> Any:
+    if name not in params:
+        raise ValueError(f"Reward term {term_name!r} requires parameter {name!r}.")
+    return params.pop(name)
+
+
+def _contact_reward_state(scene: Any, robot: Any) -> dict[str, Any]:
+    default_mass_total = robot.data.default_mass.sum(dim=1) * 9.81
+    sensor = getattr(scene, "sensors", {}).get("contact_forces")
+    if sensor is None:
+        return {"default_mass_total": default_mass_total}
+
+    data = sensor.data
+    return {
+        "contact_body_names": list(sensor.body_names),
+        "contact_current_contact_time": data.current_contact_time,
+        "contact_last_air_time": data.last_air_time,
+        "contact_first_contact": sensor.compute_first_contact(_scene_step_dt(scene)),
+        "contact_net_forces_w_history": data.net_forces_w_history,
+        "default_mass_total": default_mass_total,
+    }
+
+
+def _scene_step_dt(scene: Any) -> float:
+    model = getattr(scene, "mj_model", None)
+    opt = getattr(model, "opt", None)
+    timestep = getattr(opt, "timestep", 0.0)
+    return float(timestep)
 
 
 def _matching_name_indices(name_keys: Any, available_names: Sequence[str], label: str) -> list[int]:
@@ -888,6 +989,7 @@ def _build_kinematic_reward_state(
         ref_body_lin_vel_w=ref_body_lin_vel_w,
         actual_body_ang_vel_w=actual_body_ang_vel_w,
         ref_body_ang_vel_w=ref_body_ang_vel_w,
+        body_names=list(reference.requested_body_names),
         root_pos_w=robot.data.root_link_pos_w,
         root_quat_w=robot.data.root_link_quat_w,
         ref_root_pos_w=ref_root_pos_w,
@@ -908,6 +1010,7 @@ def _build_kinematic_reward_state(
         contact_target_pos_w=contact_target_pos_w,
         eef_contact_forces_b=eef_contact_forces_b,
         ref_object_contact=ref_object_contact,
+        **_contact_reward_state(scene, robot),
     )
 
 

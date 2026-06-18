@@ -211,6 +211,60 @@ def test_reward_from_spec_supports_loco_survival_joint_velocity_and_position_lim
     assert torch.allclose(reward, expected)
 
 
+def test_reward_from_spec_supports_feet_rewards_with_body_name_mapping():
+    state = playback_parity.MujocoRewardState(
+        body_names=["left_foot", "right_foot", "torso"],
+        contact_body_names=["right_foot", "left_foot"],
+        actual_body_lin_vel_w=torch.tensor(
+            [
+                [[0.5, 0.0, 0.0], [0.0, 0.3, 0.0], [10.0, 0.0, 0.0]],
+                [[1.5, 0.0, 0.0], [0.2, 0.2, 0.0], [10.0, 0.0, 0.0]],
+            ]
+        ),
+        contact_current_contact_time=torch.tensor([[0.01, 0.03], [0.04, 0.10]]),
+        contact_last_air_time=torch.tensor([[0.50, 0.20], [0.40, 0.10]]),
+        contact_first_contact=torch.tensor([[False, True], [True, False]]),
+        contact_net_forces_w_history=torch.tensor(
+            [
+                [
+                    [[0.0, 0.0, 0.0], [30.0, 0.0, 0.0]],
+                    [[0.0, 20.0, 0.0], [10.0, 0.0, 0.0]],
+                ],
+                [
+                    [[50.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                    [[10.0, 0.0, 0.0], [0.0, 40.0, 0.0]],
+                ],
+            ]
+        ),
+        default_mass_total=torch.tensor([20.0, 10.0]),
+    )
+    reward_cfg = {
+        "feet": {
+            "feet_slip": {"weight": 2.0, "body_names": ["left_foot", "right_foot"], "tolerance": 0.1},
+            "impact_force_l2": {"weight": 0.5, "body_names": ["left_foot", "right_foot"]},
+            "feet_air_time": {"weight": 3.0, "body_names": ["left_foot", "right_foot"], "thres": 0.30},
+        }
+    }
+
+    reward = playback_parity.compute_reward_from_spec(reward_cfg, state)
+
+    body_lin_vel_w = state.actual_body_lin_vel_w[:, [0, 1]]
+    contact_order = [1, 0]
+    current_contact_time = state.contact_current_contact_time[:, contact_order]
+    last_air_time = state.contact_last_air_time[:, contact_order]
+    first_contact = state.contact_first_contact[:, contact_order]
+    net_forces_w_history = state.contact_net_forces_w_history[:, :, contact_order]
+    in_contact = current_contact_time > 0.02
+    feet_vel = (body_lin_vel_w[..., :2].norm(dim=-1) - 0.1).clamp(min=0.0, max=1.0)
+    slip = -(in_contact * feet_vel).sum(dim=1, keepdim=True)
+    contact_forces = net_forces_w_history.norm(dim=-1).mean(dim=1)
+    force = contact_forces / state.default_mass_total[:, None]
+    impact = -(force.square() * first_contact).clamp_max(10.0).sum(dim=1, keepdim=True)
+    air_time = ((last_air_time - 0.30).clamp_max(0.0) * first_contact).sum(dim=1, keepdim=True)
+    expected = 2.0 * slip + 0.5 * impact + 3.0 * air_time
+    assert torch.allclose(reward, expected)
+
+
 def test_reward_from_spec_matches_hdmi_multiplicative_group():
     state = playback_parity.MujocoRewardState(
         object_pos_w=torch.tensor([[0.0, 0.0, 0.0]]),

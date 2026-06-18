@@ -104,6 +104,64 @@ def test_loco_common_rewards_match_hdmi_formulas():
     assert torch.allclose(reward, expected)
 
 
+def test_feet_contact_rewards_match_hdmi_formulas():
+    body_lin_vel_w = torch.tensor(
+        [
+            [[0.5, 0.0, 1.0], [0.0, 0.3, 0.0]],
+            [[1.5, 0.0, 0.0], [0.2, 0.2, 0.0]],
+        ]
+    )
+    current_contact_time = torch.tensor([[0.03, 0.01], [0.10, 0.04]])
+
+    slip = reward_parity.feet_slip(
+        body_lin_vel_w=body_lin_vel_w,
+        current_contact_time=current_contact_time,
+        tolerance=0.1,
+    )
+
+    in_contact = current_contact_time > 0.02
+    feet_vel = (body_lin_vel_w[..., :2].norm(dim=-1) - 0.1).clamp(min=0.0, max=1.0)
+    assert torch.allclose(slip, -(in_contact * feet_vel).sum(dim=1, keepdim=True))
+
+    net_forces_w_history = torch.tensor(
+        [
+            [
+                [[30.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                [[10.0, 0.0, 0.0], [0.0, 20.0, 0.0]],
+            ],
+            [
+                [[0.0, 0.0, 0.0], [50.0, 0.0, 0.0]],
+                [[0.0, 40.0, 0.0], [10.0, 0.0, 0.0]],
+            ],
+        ]
+    )
+    first_contact = torch.tensor([[True, False], [False, True]])
+    default_mass_total = torch.tensor([20.0, 10.0])
+
+    impact = reward_parity.impact_force_l2(
+        net_forces_w_history=net_forces_w_history,
+        first_contact=first_contact,
+        default_mass_total=default_mass_total,
+    )
+
+    contact_forces = net_forces_w_history.norm(dim=-1).mean(dim=1)
+    force = contact_forces / default_mass_total[:, None]
+    expected_impact = -(force.square() * first_contact).clamp_max(10.0).sum(dim=1, keepdim=True)
+    assert torch.allclose(impact, expected_impact)
+
+    last_air_time = torch.tensor([[0.20, 0.50], [0.10, 0.40]])
+    air_time = reward_parity.feet_air_time(
+        last_air_time=last_air_time,
+        first_contact=first_contact,
+        thres=0.30,
+        is_standing_env=torch.tensor([False, True]),
+    )
+
+    expected_air_time = ((last_air_time - 0.30).clamp_max(0.0) * first_contact).sum(dim=1, keepdim=True)
+    expected_air_time[1] = 0.0
+    assert torch.allclose(air_time, expected_air_time)
+
+
 def test_eef_contact_exp_matches_hdmi_contact_reward_formula():
     contact_eef_pos_w = torch.tensor(
         [

@@ -420,6 +420,38 @@ reward:
     assert summary["reward_terms_skipped"] == []
 
 
+def test_mujoco_playback_parity_cli_uses_supported_feet_rewards(tmp_path, capsys):
+    motion_dir = tmp_path / "data/motion/test_robot"
+    body_name, _ = _write_robot_motion_dir(motion_dir)
+    task_yaml = tmp_path / "cfg/task/G1/hdmi/robot.yaml"
+    task_yaml.parent.mkdir(parents=True)
+    task_yaml.write_text(
+        f"""
+command:
+  data_path: data/motion/test_robot
+  root_body_name: {body_name}
+reward:
+  feet:
+    feet_slip: {{weight: 1.0, body_names: [{body_name}], tolerance: 0.0}}
+    impact_force_l2: {{weight: 1.0, body_names: [{body_name}]}}
+    feet_air_time: {{weight: 1.0, body_names: [{body_name}], thres: 0.2}}
+""".strip()
+    )
+    script = _load_cli_module()
+
+    exit_code = script.main(["--task-yaml", str(task_yaml), "--steps", "0,1"])
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["reward_shape"] == [2, 1, 1]
+    assert summary["reward_terms_used"] == [
+        "feet.feet_slip",
+        "feet.impact_force_l2",
+        "feet.feet_air_time",
+    ]
+    assert summary["reward_terms_skipped"] == []
+
+
 def test_mujoco_playback_parity_cli_reports_policy_action_summary(tmp_path, capsys):
     object_body_name, object_joint_name = _write_motion_dir(tmp_path)
     policy_path = _write_policy_bundle(tmp_path, action_dim=2)

@@ -431,3 +431,83 @@ def _quat_rotate_inverse(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
     xyz = quat[..., 1:]
     t = torch.linalg.cross(xyz, vec, dim=-1) * 2
     return vec - quat[..., 0:1] * t + torch.linalg.cross(xyz, t, dim=-1)
+
+
+def feet_slip(
+    body_lin_vel_w: torch.Tensor,
+    current_contact_time: torch.Tensor,
+    tolerance: float = 0.0,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI feet_slip reward."""
+    _require_last_dim("body_lin_vel_w", body_lin_vel_w, 3)
+    if body_lin_vel_w.ndim != 3:
+        raise ValueError(f"body_lin_vel_w must have shape (num_envs, num_feet, 3), got {tuple(body_lin_vel_w.shape)}.")
+    if current_contact_time.shape != body_lin_vel_w.shape[:2]:
+        raise ValueError(
+            f"current_contact_time shape {tuple(current_contact_time.shape)} != feet shape {tuple(body_lin_vel_w.shape[:2])}."
+        )
+
+    in_contact = current_contact_time > 0.02
+    feet_vel = (body_lin_vel_w[..., :2].norm(dim=-1) - float(tolerance)).clamp(min=0.0, max=1.0)
+    return -(in_contact.to(dtype=feet_vel.dtype) * feet_vel).sum(dim=1, keepdim=True)
+
+
+def impact_force_l2(
+    net_forces_w_history: torch.Tensor,
+    first_contact: torch.Tensor,
+    default_mass_total: float | torch.Tensor,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI impact_force_l2 reward."""
+    _require_last_dim("net_forces_w_history", net_forces_w_history, 3)
+    if net_forces_w_history.ndim != 4:
+        raise ValueError(
+            "net_forces_w_history must have shape (num_envs, history, num_bodies, 3), "
+            f"got {tuple(net_forces_w_history.shape)}."
+        )
+    expected_shape = (net_forces_w_history.shape[0], net_forces_w_history.shape[2])
+    if first_contact.shape != expected_shape:
+        raise ValueError(f"first_contact shape {tuple(first_contact.shape)} != expected {expected_shape}.")
+
+    contact_forces = net_forces_w_history.norm(dim=-1).mean(dim=1)
+    force = contact_forces / _batch_column(default_mass_total, net_forces_w_history, "default_mass_total")
+    penalty = force.square() * first_contact.to(dtype=force.dtype)
+    return -penalty.clamp_max(10.0).sum(dim=1, keepdim=True)
+
+
+def feet_air_time(
+    last_air_time: torch.Tensor,
+    first_contact: torch.Tensor,
+    thres: float,
+    is_standing_env: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI feet_air_time reward."""
+    if last_air_time.ndim != 2:
+        raise ValueError(f"last_air_time must have shape (num_envs, num_feet), got {tuple(last_air_time.shape)}.")
+    if first_contact.shape != last_air_time.shape:
+        raise ValueError(f"first_contact shape {tuple(first_contact.shape)} != last_air_time shape {tuple(last_air_time.shape)}.")
+
+    reward = ((last_air_time - float(thres)).clamp_max(0.0) * first_contact.to(dtype=last_air_time.dtype)).sum(
+        dim=1,
+        keepdim=True,
+    )
+    if is_standing_env is not None:
+        standing = torch.as_tensor(is_standing_env, dtype=torch.bool, device=last_air_time.device)
+        if standing.ndim == 0:
+            standing = standing.reshape(1)
+        if standing.shape != (last_air_time.shape[0],):
+            raise ValueError(f"is_standing_env shape {tuple(standing.shape)} != batch shape {(last_air_time.shape[0],)}.")
+        reward = reward * (~standing).to(dtype=reward.dtype).unsqueeze(1)
+    return reward
+
+
+def _batch_column(value: float | torch.Tensor, reference: torch.Tensor, name: str) -> torch.Tensor:
+    tensor = torch.as_tensor(value, dtype=reference.dtype, device=reference.device)
+    if tensor.ndim == 0:
+        return tensor.reshape(1, 1)
+    if tensor.ndim == 1:
+        if tensor.shape[0] not in (1, reference.shape[0]):
+            raise ValueError(f"{name} length {tensor.shape[0]} is not broadcastable to batch {reference.shape[0]}.")
+        return tensor.reshape(-1, 1)
+    if tensor.ndim == 2 and tensor.shape[1] == 1 and tensor.shape[0] in (1, reference.shape[0]):
+        return tensor
+    raise ValueError(f"{name} must be scalar, (num_envs,), or (num_envs, 1), got {tuple(tensor.shape)}.")
