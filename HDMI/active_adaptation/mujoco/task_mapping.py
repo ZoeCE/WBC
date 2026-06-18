@@ -30,6 +30,22 @@ class NameIndexMapping:
 
 
 @dataclass(frozen=True)
+class PolicyNameIndexMapping:
+    name: str
+    policy_index: int
+    motion_index: int
+    mujoco_index: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "policy_index": self.policy_index,
+            "motion_index": self.motion_index,
+            "mujoco_index": self.mujoco_index,
+        }
+
+
+@dataclass(frozen=True)
 class TaskMotionMappingReport:
     task_path: Path
     motion_dir: Path
@@ -63,6 +79,71 @@ class TaskMotionMappingReport:
             "body_name_mapping": [entry.to_dict() for entry in self.body_name_mapping],
             "joint_name_mapping": [entry.to_dict() for entry in self.joint_name_mapping],
         }
+
+
+@dataclass(frozen=True)
+class PolicyTaskMotionMappingReport:
+    task_report: TaskMotionMappingReport
+    policy_config_path: Path
+    policy_body_names: tuple[str, ...]
+    policy_joint_names: tuple[str, ...]
+    policy_body_name_mapping: tuple[PolicyNameIndexMapping, ...]
+    policy_joint_name_mapping: tuple[PolicyNameIndexMapping, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        data = self.task_report.to_dict()
+        data.update(
+            {
+                "policy_config_path": str(self.policy_config_path),
+                "policy_body_names": list(self.policy_body_names),
+                "policy_joint_names": list(self.policy_joint_names),
+                "policy_body_name_mapping": [entry.to_dict() for entry in self.policy_body_name_mapping],
+                "policy_joint_name_mapping": [entry.to_dict() for entry in self.policy_joint_name_mapping],
+            }
+        )
+        return data
+
+
+def validate_policy_task_motion_mapping(
+    policy_config_path: str | Path,
+    task_yaml: str | Path,
+    *,
+    robot_name: str = "g1_29dof",
+) -> PolicyTaskMotionMappingReport:
+    policy_config_path = Path(policy_config_path)
+    policy_cfg = _load_yaml_mapping(policy_config_path)
+    task_report = validate_task_motion_mapping(task_yaml, robot_name=robot_name)
+    policy_body_names = tuple(
+        _string_list(policy_cfg.get("isaac_body_names", ()), "isaac_body_names", policy_config_path)
+    )
+    policy_joint_names = tuple(
+        _string_list(
+            policy_cfg.get("isaac_joint_names") or policy_cfg.get("policy_joint_names", ()),
+            "isaac_joint_names",
+            policy_config_path,
+        )
+    )
+
+    return PolicyTaskMotionMappingReport(
+        task_report=task_report,
+        policy_config_path=policy_config_path,
+        policy_body_names=policy_body_names,
+        policy_joint_names=policy_joint_names,
+        policy_body_name_mapping=_build_policy_name_mapping(
+            policy_body_names,
+            task_report.motion_body_names,
+            task_report.body_name_mapping,
+            label="policy body",
+            path=policy_config_path,
+        ),
+        policy_joint_name_mapping=_build_policy_name_mapping(
+            policy_joint_names,
+            task_report.motion_joint_names,
+            task_report.joint_name_mapping,
+            label="policy joint",
+            path=policy_config_path,
+        ),
+    )
 
 
 def validate_task_motion_mapping(
@@ -174,6 +255,30 @@ def validate_all_task_motion_mappings(
             continue
         reports.append(validate_task_motion_mapping(task_path, robot_name=robot_name))
     return tuple(reports)
+
+
+def _build_policy_name_mapping(
+    policy_names: Sequence[str],
+    motion_names: Sequence[str],
+    motion_mapping: Sequence[NameIndexMapping],
+    *,
+    label: str,
+    path: Path,
+) -> tuple[PolicyNameIndexMapping, ...]:
+    motion_index = {name: index for index, name in enumerate(motion_names)}
+    mujoco_index = {entry.name: entry.mujoco_index for entry in motion_mapping}
+    missing_motion = [name for name in policy_names if name not in motion_index]
+    if missing_motion:
+        raise ValueError(f"{path}: {label} names are absent from motion metadata: {missing_motion}.")
+    return tuple(
+        PolicyNameIndexMapping(
+            name=name,
+            policy_index=policy_index,
+            motion_index=motion_index[name],
+            mujoco_index=mujoco_index[name],
+        )
+        for policy_index, name in enumerate(policy_names)
+    )
 
 
 def _build_name_mapping(

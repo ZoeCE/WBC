@@ -11,6 +11,7 @@ if str(HDMI_ROOT) not in sys.path:
 
 from active_adaptation.mujoco.task_mapping import (
     validate_all_task_motion_mappings,
+    validate_policy_task_motion_mapping,
     validate_task_motion_mapping,
 )
 
@@ -18,7 +19,14 @@ from active_adaptation.mujoco.task_mapping import (
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.task_yaml is not None:
-        report = validate_task_motion_mapping(args.task_yaml, robot_name=args.robot_name)
+        if args.policy_config is not None:
+            report = validate_policy_task_motion_mapping(
+                args.policy_config,
+                args.task_yaml,
+                robot_name=args.robot_name,
+            )
+        else:
+            report = validate_task_motion_mapping(args.task_yaml, robot_name=args.robot_name)
         print(json.dumps(report.to_dict(), sort_keys=True))
         return 0
 
@@ -56,6 +64,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--robot-name",
         default="g1_29dof",
         help="MuJoCo robot registry name used to resolve assets_mjcf scenes.",
+    )
+    parser.add_argument(
+        "--policy-config",
+        default=None,
+        help="Optional exported policy YAML to validate against the task motion and MuJoCo MJCF names.",
     )
     return parser.parse_args(argv)
 

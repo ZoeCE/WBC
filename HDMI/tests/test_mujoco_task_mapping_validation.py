@@ -80,3 +80,54 @@ def test_task_mapping_cli_prints_json_summary(capsys):
     assert summary["object_asset_name"] == "door"
     assert summary["task_object_body_name"] == "door_panel"
     assert summary["reference_object_body_name"] == "door"
+
+
+
+def test_task_mapping_cli_reports_exported_policy_motion_mjcf_name_indices(tmp_path, capsys):
+    module = _load_mapping_cli_module()
+    task_path = ROOT / "cfg/task/G1/hdmi/open_door-feet.yaml"
+    policy_cfg_path = tmp_path / "policy-export.yaml"
+    policy_cfg_path.write_text(
+        json.dumps(
+            {
+                "policy_joint_names": ["left_hip_pitch_joint"],
+                "isaac_joint_names": ["left_hip_pitch_joint"],
+                "isaac_body_names": ["pelvis"],
+            }
+        )
+    )
+
+    try:
+        exit_code = module.main(
+            [
+                "--task-yaml",
+                str(task_path),
+                "--policy-config",
+                str(policy_cfg_path),
+            ]
+        )
+    except SystemExit as exc:
+        exit_code = exc.code
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    summary = json.loads(captured.out)
+    assert summary["policy_config_path"] == str(policy_cfg_path)
+    pelvis_mujoco_index = next(
+        entry["mujoco_index"] for entry in summary["body_name_mapping"] if entry["name"] == "pelvis"
+    )
+    left_hip_mujoco_index = next(
+        entry["mujoco_index"] for entry in summary["joint_name_mapping"] if entry["name"] == "left_hip_pitch_joint"
+    )
+    assert summary["policy_body_name_mapping"][0] == {
+        "name": "pelvis",
+        "policy_index": 0,
+        "motion_index": 0,
+        "mujoco_index": pelvis_mujoco_index,
+    }
+    assert summary["policy_joint_name_mapping"][0] == {
+        "name": "left_hip_pitch_joint",
+        "policy_index": 0,
+        "motion_index": 0,
+        "mujoco_index": left_hip_mujoco_index,
+    }
