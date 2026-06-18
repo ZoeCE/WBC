@@ -531,7 +531,14 @@ def run_policy_playback_smoke(
     targets_t = torch.stack(joint_targets)
     return {
         "policy_path": str(policy_path),
+        "policy_config_path": str(bundle.config_path),
+        "policy_action_dim": bundle.action_dim,
         "policy_action_shape": list(actions_t.shape),
+        "policy_observation_joint_names": list(bundle.observation_joint_names),
+        "policy_reference_body_names": list(reference.requested_body_names),
+        "policy_reference_joint_names": list(reference.requested_joint_names),
+        "policy_reference_root_body_name": reference.root_body_name,
+        "policy_reference_future_steps": [int(step) for step in reference.future_steps.tolist()],
         "policy_joint_target_shape": list(targets_t.shape),
         "policy_action_mean": float(actions_t.mean().item()),
         "policy_action_max_abs": float(actions_t.abs().max().item()),

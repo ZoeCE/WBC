@@ -576,6 +576,11 @@ def test_mujoco_playback_parity_cli_uses_exported_policy_reference_future_steps(
     summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert summary["policy_action_shape"] == [2, 1, 1]
     assert summary["policy_joint_target_shape"] == [2, 1, 1]
+    assert summary["policy_action_dim"] == 1
+    assert summary["policy_reference_body_names"] == [meta["body_names"][0]]
+    assert summary["policy_reference_joint_names"] == [meta["joint_names"][0]]
+    assert summary["policy_reference_root_body_name"] == meta["body_names"][0]
+    assert summary["policy_reference_future_steps"] == [0, 1, 1]
 
 
 def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path, capsys):
