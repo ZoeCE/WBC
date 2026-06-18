@@ -18,7 +18,9 @@ class body_pos_b(Observation):
         self.asset: Articulation = self.env.scene["robot"]
         self.body_indices, self.body_names = self.asset.find_bodies(body_names)
         self.update()
-        if self.env.backend == "mujoco":
+        self.feet_marker_0 = None
+        self.feet_marker_1 = None
+        if self.env.backend == "mujoco" and self.env.sim.has_gui():
             self.feet_marker_0 = self.env.scene.create_sphere_marker(0.05, [1, 0, 0, 0.5])
             self.feet_marker_1 = self.env.scene.create_sphere_marker(0.05, [1, 0, 0, 0.5])
 
@@ -37,7 +39,7 @@ class body_pos_b(Observation):
         return sym_utils.cartesian_space_symmetry(self.asset, self.body_names)
     
     def debug_draw(self):
-        if self.env.backend == "mujoco":
+        if self.env.backend == "mujoco" and self.feet_marker_0 is not None:
             self.feet_marker_0.geom.pos = self.asset.data.body_pos_w[0, self.body_indices[0]]
             self.feet_marker_1.geom.pos = self.asset.data.body_pos_w[0, self.body_indices[1]]
 

@@ -66,6 +66,8 @@ class MJArticulationData:
     root_lin_vel_b: ArrayType = None
     heading_w: ArrayType = None
     soft_joint_pos_limits: ArrayType = None
+    joint_pos_limits: ArrayType = None
+    joint_vel_limits: ArrayType = None
     soft_joint_vel_limits: ArrayType = None
 
     @property
@@ -216,6 +218,16 @@ class MJArticulation:
         self.joint_qposadr_write = self.joint_qposadr[self._jnt_isaac2mjc]
         self.joint_qveladr_write = self.joint_qveladr[self._jnt_isaac2mjc]
         self.root_qposadr, self.root_qveladr = self._resolve_root_free_joint_addresses()
+        self.geom_adrs_by_body = []
+        geom_adrs = []
+        for body_adr in self.body_adrs_read:
+            body_geom_adrs = np.array([
+                geom_id for geom_id in range(self.mj_model.ngeom)
+                if int(self.mj_model.geom_bodyid[geom_id]) == int(body_adr)
+            ], dtype=np.int64)
+            geom_adrs.extend(body_geom_adrs.tolist())
+            self.geom_adrs_by_body.append(body_geom_adrs)
+        self.geom_adrs = np.array(geom_adrs, dtype=np.int64)
 
         joint_ids, joint_names, joint_pos = string_utils.resolve_matching_names_values(self.cfg.init_state["joint_pos"], self.joint_names_isaac)
         if len(joint_names) < len(self.joint_names_isaac):
@@ -248,12 +260,14 @@ class MJArticulation:
             default_joint_vel=default_joint_vel.expand(self.num_instances, -1).clone(),
             default_root_state=default_root_state.expand(self.num_instances, -1).clone(),
             default_mass=torch.as_tensor(self.mj_model.body_mass[self.body_adrs], dtype=torch.float32).expand(self.num_instances, -1).clone(),
-            default_inertia=diag_inertia.diag_embed().flatten()[None].expand(self.num_instances, -1).clone(),
+            default_inertia=diag_inertia.expand(self.num_instances, -1, -1).clone(),
             joint_stiffness=joint_stiffness.expand(self.num_instances, -1).clone(),
             joint_damping=joint_damping.expand(self.num_instances, -1).clone(),
             applied_torque=torch.zeros(self.num_instances, self.num_joints),
             joint_effort_limits=joint_effort_limits.expand(self.num_instances, -1).clone(),
             soft_joint_pos_limits=joint_pos_limits.expand(self.num_instances, -1, -1).clone(),
+            joint_pos_limits=joint_pos_limits.expand(self.num_instances, -1, -1).clone(),
+            joint_vel_limits=joint_vel_limits.expand(self.num_instances, -1).clone(),
             soft_joint_vel_limits=joint_vel_limits.expand(self.num_instances, -1).clone(),
         )
         self._data.joint_pos_target = self._data.default_joint_pos.clone()
@@ -264,6 +278,7 @@ class MJArticulation:
         self.has_external_wrench = False
 
         self.timestamp = 0.
+        self.root_physx_view = MJRootPhysxView(self)
 
         for model, data in zip(self.mj_models, self.mj_datas, strict=True):
             mujoco.mj_forward(model, data)
@@ -609,6 +624,27 @@ class MJRootPhysxView:
         for row, env_id in enumerate(indices_t.tolist()):
             self.asset.mj_models[env_id].body_inertia[self.asset.body_adrs_read] = inertias_t[row].detach().cpu().numpy()
         self.asset.data.default_inertia[indices_t] = inertias_t
+
+    def get_coms(self):
+        coms = [
+            torch.as_tensor(model.body_ipos[self.asset.body_adrs_read].copy(), dtype=torch.float32)
+            for model in self.asset.mj_models
+        ]
+        return torch.stack(coms)
+
+    def set_coms(self, coms: ArrayType, indices: ArrayType):
+        indices_t = self._normalize_indices(indices)
+        coms_t = self._rows_for_indices(coms, indices_t, trailing_shape=(self.asset.num_bodies, 3))
+        for row, env_id in enumerate(indices_t.tolist()):
+            self.asset.mj_models[env_id].body_ipos[self.asset.body_adrs_read] = coms_t[row].detach().cpu().numpy()
+            mujoco.mj_forward(self.asset.mj_models[env_id], self.asset.mj_datas[env_id])
+
+    def shape_ids_for_bodies(self, body_ids: Sequence[int]) -> torch.Tensor:
+        shape_ids = []
+        for body_id in body_ids:
+            geom_adrs = self.asset.geom_adrs_by_body[int(body_id)]
+            shape_ids.extend(np.where(np.isin(self.geom_adrs, geom_adrs))[0].tolist())
+        return torch.as_tensor(shape_ids, dtype=torch.long)
 
     def get_material_properties(self):
         return self._material_properties.clone()

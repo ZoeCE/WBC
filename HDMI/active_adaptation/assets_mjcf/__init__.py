@@ -22,7 +22,7 @@ class RobotRegistry(dict):
 
         mjcf_path = os.path.join(PATH, "g1_29dof_nohand", "g1_29dof_nohand.xml")
         manifest = load_mujoco_asset_manifest(mjcf_path)
-        self["g1_29dof"] = MJArticulationCfg(
+        g1_29dof = MJArticulationCfg(
             mjcf_path=mjcf_path,
             init_state={
                 "pos": [0.0, 0.0, 0.76],
@@ -98,6 +98,8 @@ class RobotRegistry(dict):
             }),
             spatial_symmetry_mapping={},
         )
+        self["g1_29dof"] = g1_29dof
+        self["g1"] = g1_29dof
         self._loaded = True
 
     def with_object(self, robot_name: str, object_asset_name: str, object_type: str | None = None):

@@ -262,15 +262,18 @@ class perturb_body_materials(Randomization):
             self.asset.root_physx_view.get_material_properties()
         )
         
-        num_shapes_per_body = []
-        for link_path in self.asset.root_physx_view.link_paths[0]:
-            link_physx_view = self.asset._physics_sim_view.create_rigid_body_view(link_path)  # type: ignore
-            num_shapes_per_body.append(link_physx_view.max_shapes)
-        cumsum = np.cumsum([0,] + num_shapes_per_body)
-        self.shape_ids = torch.cat([
-            torch.arange(cumsum[i], cumsum[i+1]) 
-            for i in self.body_ids
-        ])
+        if self.env.backend == "mujoco":
+            self.shape_ids = self.asset.root_physx_view.shape_ids_for_bodies(self.body_ids)
+        else:
+            num_shapes_per_body = []
+            for link_path in self.asset.root_physx_view.link_paths[0]:
+                link_physx_view = self.asset._physics_sim_view.create_rigid_body_view(link_path)  # type: ignore
+                num_shapes_per_body.append(link_physx_view.max_shapes)
+            cumsum = np.cumsum([0,] + num_shapes_per_body)
+            self.shape_ids = torch.cat([
+                torch.arange(cumsum[i], cumsum[i+1])
+                for i in self.body_ids
+            ])
         self.num_buckets = 64
         self.static_friction_buckets = sample_uniform((self.num_buckets,), *self.static_friction_range)
         self.dynamic_friction_buckets = sample_uniform((self.num_buckets,), *self.dynamic_friction_range)
