@@ -478,6 +478,62 @@ def test_kinematic_motion_playback_parity_writes_robot_and_object_reference_orde
     assert metrics.q_l2.max() < 1e-5
 
 
+def test_kinematic_motion_playback_parity_writes_extra_object_reference_bodies():
+    module = _mujoco_env_module()
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS.with_object("g1_29dof", object_asset_name="bread_box")
+
+    scene = module.MJScene(SceneCfg(), num_envs=1, launch_viewer=False)
+    robot = scene["robot"]
+    bread_box = scene["bread_box"]
+    support0 = scene["support0"]
+
+    body_names = [robot.body_names[0], bread_box.body_names[0], support0.body_names[0]]
+    joint_names = [robot.joint_names[0]]
+    body_pos_w = torch.tensor(
+        [
+            [[0.0, 0.0, 0.80], [1.0, 0.0, 0.20], [0.2, -0.3, 0.4]],
+            [[0.1, 0.0, 0.82], [1.2, 0.1, 0.25], [0.5, -0.1, 0.6]],
+        ]
+    )
+    body_quat_w = torch.zeros(2, 3, 4)
+    body_quat_w[..., 0] = 1.0
+    joint_pos = torch.tensor([[0.10], [0.30]])
+    reference = MujocoMotionReference(
+        body_names=body_names,
+        joint_names=joint_names,
+        requested_body_names=body_names,
+        requested_joint_names=joint_names,
+        root_body_name=body_names[0],
+        future_steps=torch.tensor([0]),
+        body_indices=torch.arange(len(body_names)),
+        joint_indices=torch.arange(len(joint_names)),
+        root_body_index=0,
+        body_pos_w=body_pos_w,
+        body_quat_w=body_quat_w,
+        joint_pos=joint_pos,
+        fps=50.0,
+    )
+
+    metrics = playback_parity.compute_kinematic_motion_playback_parity(
+        scene,
+        reference,
+        steps=[0, 1],
+        object_name="bread_box",
+        object_body_name=bread_box.body_names[0],
+    )
+
+    assert metrics.q_l2.max() < 1e-5
+    assert metrics.body_pos_l2.max() < 1e-5
+    assert torch.allclose(
+        support0.data.root_link_pos_w,
+        body_pos_w[-1, 2].unsqueeze(0),
+        atol=1e-6,
+    )
+
+
 def test_kinematic_motion_playback_uses_reference_object_root_when_tracking_body_differs():
     module = _mujoco_env_module()
     from active_adaptation.assets_mjcf import ROBOTS

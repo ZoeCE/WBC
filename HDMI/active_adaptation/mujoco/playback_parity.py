@@ -250,6 +250,8 @@ def compute_kinematic_motion_playback_parity(
     if robot is None:
         raise KeyError("MuJoCo scene does not contain a 'robot' articulation.")
     object_view = _scene_optional_asset(scene, object_name)
+    primary_object_view = object_view
+    object_view = _scene_object_views(scene, primary_object_view)
     steps_t = _normalize_playback_steps(steps, reference.num_steps)
 
     q_l2: list[torch.Tensor] = []
@@ -311,7 +313,7 @@ def compute_kinematic_motion_playback_parity(
             reward_state = _build_kinematic_reward_state(
                 scene=scene,
                 robot=robot,
-                object_view=object_view,
+                object_view=primary_object_view,
                 reference=reference,
                 step=step,
                 actual_body_pos_w=actual_body_pos_w,
@@ -751,6 +753,29 @@ def _scene_optional_asset(scene: Any, asset_name: str | None) -> Any | None:
     return asset
 
 
+def _scene_object_views(scene: Any, primary_object_view: Any | None) -> tuple[Any, ...]:
+    object_views: list[Any] = []
+    if primary_object_view is not None:
+        object_views.append(primary_object_view)
+    for candidate in getattr(scene, "_object_views", ()):
+        if candidate is None:
+            continue
+        if all(candidate is existing for existing in object_views):
+            continue
+        object_views.append(candidate)
+    return tuple(object_views)
+
+
+def _as_object_views(object_view: Any | None) -> tuple[Any, ...]:
+    if object_view is None:
+        return ()
+    if isinstance(object_view, tuple):
+        return tuple(view for view in object_view if view is not None)
+    if isinstance(object_view, list):
+        return tuple(view for view in object_view if view is not None)
+    return (object_view,)
+
+
 def _write_reference_frame_to_scene(
     *,
     scene: Any,
@@ -773,8 +798,9 @@ def _write_reference_frame_to_scene(
     robot_pairs = _reference_to_asset_joint_pairs(reference.requested_joint_names, robot.joint_names)
     _write_asset_joint_pairs(robot, ref_joint_pos, ref_joint_vel, robot_pairs)
 
-    if object_view is not None:
-        reference_object_body_name = _reference_object_body_name(reference, object_view, object_body_name)
+    for object_index, current_object_view in enumerate(_as_object_views(object_view)):
+        preferred_body_name = object_body_name if object_index == 0 else None
+        reference_object_body_name = _reference_object_body_name(reference, current_object_view, preferred_body_name)
         if reference_object_body_name is not None:
             body_index = _name_index(reference.body_names, reference_object_body_name, "body")
             object_pose = torch.cat(
@@ -783,10 +809,10 @@ def _write_reference_frame_to_scene(
                     reference.body_quat_w[step, body_index],
                 ]
             )
-            object_view.write_root_link_pose_to_sim(object_pose)
+            current_object_view.write_root_link_pose_to_sim(object_pose)
 
-        object_pairs = _reference_to_asset_joint_pairs(reference.requested_joint_names, object_view.joint_names)
-        _write_asset_joint_pairs(object_view, ref_joint_pos, ref_joint_vel, object_pairs)
+        object_pairs = _reference_to_asset_joint_pairs(reference.requested_joint_names, current_object_view.joint_names)
+        _write_asset_joint_pairs(current_object_view, ref_joint_pos, ref_joint_vel, object_pairs)
     scene.update(0.0)
 
 
@@ -858,13 +884,13 @@ def _expand_reference_frame(frame: torch.Tensor, num_envs: int) -> torch.Tensor:
 
 def _gather_scene_joint_pos(robot: Any, joint_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
     robot_index = _name_to_index(robot.joint_names)
-    object_index = _name_to_index(object_view.joint_names) if object_view is not None else {}
     columns = []
     for joint_name in joint_names:
         if joint_name in robot_index:
             columns.append(robot.data.joint_pos[:, robot_index[joint_name]])
-        elif object_view is not None and joint_name in object_index:
-            columns.append(object_view.data.joint_pos[:, object_index[joint_name]])
+        elif (match := _find_object_named_value(object_view, "joint_names", joint_name)) is not None:
+            current_object_view, object_joint_index = match
+            columns.append(current_object_view.data.joint_pos[:, object_joint_index])
         else:
             raise ValueError(f"missing playback joint name in MuJoCo scene: {joint_name!r}.")
     return torch.stack(columns, dim=1)
@@ -872,13 +898,13 @@ def _gather_scene_joint_pos(robot: Any, joint_names: Sequence[str], object_view:
 
 def _gather_scene_joint_vel(robot: Any, joint_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
     robot_index = _name_to_index(robot.joint_names)
-    object_index = _name_to_index(object_view.joint_names) if object_view is not None else {}
     columns = []
     for joint_name in joint_names:
         if joint_name in robot_index:
             columns.append(robot.data.joint_vel[:, robot_index[joint_name]])
-        elif object_view is not None and joint_name in object_index:
-            columns.append(object_view.data.joint_vel[:, object_index[joint_name]])
+        elif (match := _find_object_named_value(object_view, "joint_names", joint_name)) is not None:
+            current_object_view, object_joint_index = match
+            columns.append(current_object_view.data.joint_vel[:, object_joint_index])
         else:
             raise ValueError(f"missing playback joint name in MuJoCo scene: {joint_name!r}.")
     return torch.stack(columns, dim=1)
@@ -886,15 +912,15 @@ def _gather_scene_joint_vel(robot: Any, joint_names: Sequence[str], object_view:
 
 def _gather_scene_joint_pos_limits(robot: Any, joint_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
     robot_index = _name_to_index(robot.joint_names)
-    object_index = _name_to_index(object_view.joint_names) if object_view is not None else {}
     robot_limits = robot.data.soft_joint_pos_limits
-    object_limits = object_view.data.soft_joint_pos_limits if object_view is not None else None
     columns = []
     for joint_name in joint_names:
         if joint_name in robot_index:
             columns.append(robot_limits[:, robot_index[joint_name]])
-        elif object_view is not None and joint_name in object_index:
-            columns.append(object_limits[:, object_index[joint_name]])
+        elif (match := _find_object_named_value(object_view, "joint_names", joint_name)) is not None:
+            current_object_view, object_joint_index = match
+            object_limits = current_object_view.data.soft_joint_pos_limits
+            columns.append(object_limits[:, object_joint_index])
         else:
             raise ValueError(f"missing playback joint name in MuJoCo scene: {joint_name!r}.")
     return torch.stack(columns, dim=1)
@@ -902,15 +928,14 @@ def _gather_scene_joint_pos_limits(robot: Any, joint_names: Sequence[str], objec
 
 def _gather_scene_applied_torque(robot: Any, joint_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
     robot_index = _name_to_index(robot.joint_names)
-    object_index = _name_to_index(object_view.joint_names) if object_view is not None else {}
     object_zeros = None
     columns = []
     for joint_name in joint_names:
         if joint_name in robot_index:
             columns.append(robot.data.applied_torque[:, robot_index[joint_name]])
-        elif object_view is not None and joint_name in object_index:
+        elif _find_object_named_value(object_view, "joint_names", joint_name) is not None:
             if object_zeros is None:
-                object_zeros = torch.zeros(object_view.num_instances, dtype=robot.data.applied_torque.dtype)
+                object_zeros = torch.zeros(robot.num_instances, dtype=robot.data.applied_torque.dtype)
             columns.append(object_zeros)
         else:
             raise ValueError(f"missing playback joint name in MuJoCo scene: {joint_name!r}.")
@@ -919,15 +944,14 @@ def _gather_scene_applied_torque(robot: Any, joint_names: Sequence[str], object_
 
 def _gather_scene_joint_effort_limits(robot: Any, joint_names: Sequence[str], object_view: Any | None) -> torch.Tensor:
     robot_index = _name_to_index(robot.joint_names)
-    object_index = _name_to_index(object_view.joint_names) if object_view is not None else {}
     object_limits = None
     columns = []
     for joint_name in joint_names:
         if joint_name in robot_index:
             columns.append(robot.data.joint_effort_limits[:, robot_index[joint_name]])
-        elif object_view is not None and joint_name in object_index:
+        elif _find_object_named_value(object_view, "joint_names", joint_name) is not None:
             if object_limits is None:
-                object_limits = torch.full((object_view.num_instances,), float("inf"), dtype=robot.data.applied_torque.dtype)
+                object_limits = torch.full((robot.num_instances,), float("inf"), dtype=robot.data.applied_torque.dtype)
             columns.append(object_limits)
         else:
             raise ValueError(f"missing playback joint name in MuJoCo scene: {joint_name!r}.")
@@ -957,18 +981,26 @@ def _gather_scene_body_tensor(
     tensor_name: str,
 ) -> torch.Tensor:
     robot_index = _name_to_index(robot.body_names)
-    object_index = _name_to_index(object_view.body_names) if object_view is not None else {}
     robot_tensor = getattr(robot.data, tensor_name)
-    object_tensor = getattr(object_view.data, tensor_name) if object_view is not None else None
     columns = []
     for body_name in body_names:
         if body_name in robot_index:
             columns.append(robot_tensor[:, robot_index[body_name]])
-        elif object_view is not None and body_name in object_index:
-            columns.append(object_tensor[:, object_index[body_name]])
+        elif (match := _find_object_named_value(object_view, "body_names", body_name)) is not None:
+            current_object_view, object_body_index = match
+            object_tensor = getattr(current_object_view.data, tensor_name)
+            columns.append(object_tensor[:, object_body_index])
         else:
             raise ValueError(f"missing playback body name in MuJoCo scene: {body_name!r}.")
     return torch.stack(columns, dim=1)
+
+
+def _find_object_named_value(object_view: Any | None, names_attr: str, name: str) -> tuple[Any, int] | None:
+    for current_object_view in _as_object_views(object_view):
+        name_index = _name_to_index(getattr(current_object_view, names_attr))
+        if name in name_index:
+            return current_object_view, name_index[name]
+    return None
 
 
 def _build_kinematic_reward_state(
