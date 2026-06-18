@@ -54,6 +54,8 @@ KINEMATIC_REWARD_TERMS = {
     "eef_contact_all",
 }
 
+_OBJECT_POSE_OBS_KEYS = ("object_xy_b", "object_heading_b", "object_pos_b", "object_ori_b")
+
 
 def run_parity(
     *,
@@ -560,7 +562,7 @@ def _policy_object_state_from_reference(
     num_envs: int,
     dtype: torch.dtype,
 ) -> dict[str, torch.Tensor]:
-    object_name = _first_policy_observation_object_name(bundle, ("object_xy_b", "object_heading_b"))
+    object_name = _first_policy_observation_object_name(bundle, _OBJECT_POSE_OBS_KEYS)
     contact_cfg = _first_policy_observation_cfg(bundle, "ref_contact_pos_b")
     if object_name is None and contact_cfg is not None:
         object_name = contact_cfg.get("object_name")
