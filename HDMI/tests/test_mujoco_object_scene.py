@@ -76,3 +76,28 @@ def test_mj_scene_exposes_articulated_object_view_and_filtered_contact_sensor():
 
     assert torch.allclose(door.data.joint_pos, joint_pos)
     assert torch.allclose(door.data.joint_vel, joint_vel)
+
+
+def test_robot_root_pose_write_uses_robot_free_joint_when_object_precedes_robot():
+    module = _mujoco_env_module()
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS.with_object("g1_29dof", object_asset_name="box")
+
+    scene = module.MJScene(SceneCfg(), num_envs=2, launch_viewer=False)
+    robot = scene["robot"]
+    box = scene["box"]
+    box_root_before = box.data.root_link_pos_w.clone()
+    root_pose = torch.tensor(
+        [
+            [1.25, -0.75, 0.91, 1.0, 0.0, 0.0, 0.0],
+            [-0.50, 0.80, 0.87, 1.0, 0.0, 0.0, 0.0],
+        ]
+    )
+
+    robot.write_root_link_pose_to_sim(root_pose)
+    scene.update(0.0)
+
+    assert torch.allclose(robot.data.root_link_pos_w, root_pose[:, :3])
+    assert torch.allclose(box.data.root_link_pos_w, box_root_before)

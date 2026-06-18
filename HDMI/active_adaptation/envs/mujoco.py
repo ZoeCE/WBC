@@ -214,6 +214,7 @@ class MJArticulation:
         self.joint_mj_ids_read = self.joint_mj_ids[self._jnt_mjc2isaac]
         self.joint_qposadr_write = self.joint_qposadr[self._jnt_isaac2mjc]
         self.joint_qveladr_write = self.joint_qveladr[self._jnt_isaac2mjc]
+        self.root_qposadr, self.root_qveladr = self._resolve_root_free_joint_addresses()
 
         joint_ids, joint_names, joint_pos = string_utils.resolve_matching_names_values(self.cfg.init_state["joint_pos"], self.joint_names_isaac)
         if len(joint_names) < len(self.joint_names_isaac):
@@ -366,13 +367,14 @@ class MJArticulation:
     def write_root_state_to_sim(self, root_state: ArrayType, env_ids: ArrayType = None):
         env_ids_t = self._normalize_env_ids(env_ids)
         root_state_t = self._rows_for_envs(root_state, env_ids_t)
+        root_qposadr, root_qveladr = self._require_root_free_joint_addresses()
 
         for row, env_id in enumerate(env_ids_t.tolist()):
             data = self.mj_datas[env_id]
             root_np = root_state_t[row].detach().cpu().numpy()
-            data.qpos[:3] = root_np[:3]
-            data.qpos[3:7] = root_np[3:7]
-            data.qvel[:6] = 0.0
+            data.qpos[root_qposadr:root_qposadr + 3] = root_np[:3]
+            data.qpos[root_qposadr + 3:root_qposadr + 7] = root_np[3:7]
+            data.qvel[root_qveladr:root_qveladr + 6] = 0.0
             self._write_joint_state_to_data(
                 data,
                 joint_pos=self._data.default_joint_pos[env_id],
@@ -385,22 +387,24 @@ class MJArticulation:
     def write_root_link_pose_to_sim(self, root_pose: ArrayType, env_ids: ArrayType = None):
         env_ids_t = self._normalize_env_ids(env_ids)
         root_pose_t = self._rows_for_envs(root_pose, env_ids_t)
+        root_qposadr, _ = self._require_root_free_joint_addresses()
 
         for row, env_id in enumerate(env_ids_t.tolist()):
             data = self.mj_datas[env_id]
             root_np = root_pose_t[row].detach().cpu().numpy()
-            data.qpos[:3] = root_np[:3]
-            data.qpos[3:7] = root_np[3:7]
+            data.qpos[root_qposadr:root_qposadr + 3] = root_np[:3]
+            data.qpos[root_qposadr + 3:root_qposadr + 7] = root_np[3:7]
             mujoco.mj_forward(self.mj_models[env_id], data)
         self.update(0.0)
 
     def write_root_com_velocity_to_sim(self, root_velocity: ArrayType, env_ids: ArrayType = None):
         env_ids_t = self._normalize_env_ids(env_ids)
         root_velocity_t = self._rows_for_envs(root_velocity, env_ids_t)
+        _, root_qveladr = self._require_root_free_joint_addresses()
 
         for row, env_id in enumerate(env_ids_t.tolist()):
             data = self.mj_datas[env_id]
-            data.qvel[:6] = root_velocity_t[row].detach().cpu().numpy()
+            data.qvel[root_qveladr:root_qveladr + 6] = root_velocity_t[row].detach().cpu().numpy()
             mujoco.mj_forward(self.mj_models[env_id], data)
         self.update(0.0)
 
@@ -507,6 +511,22 @@ class MJArticulation:
         if joint_ids_t.numel() and (torch.any(joint_ids_t < 0) or torch.any(joint_ids_t >= self.num_joints)):
             raise ValueError(f"joint_ids must be in [0, {self.num_joints}), got {joint_ids_t.tolist()}.")
         return joint_ids_t
+
+    def _resolve_root_free_joint_addresses(self) -> tuple[int | None, int | None]:
+        root_body_id = int(self.body_adrs_read[0])
+        joint_adr = int(self.mj_model.body_jntadr[root_body_id])
+        joint_num = int(self.mj_model.body_jntnum[root_body_id])
+        if joint_adr < 0 or joint_num == 0:
+            return None, None
+        for joint_id in range(joint_adr, joint_adr + joint_num):
+            if self.mj_model.jnt_type[joint_id] == mujoco.mjtJoint.mjJNT_FREE:
+                return int(self.mj_model.jnt_qposadr[joint_id]), int(self.mj_model.jnt_dofadr[joint_id])
+        return None, None
+
+    def _require_root_free_joint_addresses(self) -> tuple[int, int]:
+        if self.root_qposadr is None or self.root_qveladr is None:
+            raise RuntimeError(f"Articulation root body {self.body_names[0]!r} does not have a free joint.")
+        return self.root_qposadr, self.root_qveladr
 
     def _rows_for_envs(self, value: ArrayType, env_ids: torch.Tensor) -> torch.Tensor:
         value_t = torch.as_tensor(value, dtype=torch.float32)
