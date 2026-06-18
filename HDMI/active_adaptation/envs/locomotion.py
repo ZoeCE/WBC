@@ -260,6 +260,24 @@ class SimpleEnv(_Env):
             env_spacing = self.cfg.viewer.get("env_spacing", 0.0)
             launch_viewer = not bool(getattr(self.cfg, "headless", True))
             self.scene = MJScene(SceneCfg(), num_envs=self.cfg.num_envs, launch_viewer=launch_viewer, env_spacing=env_spacing)
+            body_scale_rand = self.cfg.randomization.get("body_scale", None)
+            if body_scale_rand is not None:
+                asset = self.scene[body_scale_rand.name]
+                if asset is None or not hasattr(asset, "apply_body_scale"):
+                    raise ValueError(f"MuJoCo body_scale target {body_scale_rand.name!r} is not a scalable object.")
+                low, high = (float(value) for value in body_scale_rand.scale_range)
+                homogeneous_scale = bool(body_scale_rand.get("homogeneous_scale", False))
+                if homogeneous_scale:
+                    scales = torch.ones(self.cfg.num_envs, 1)
+                    if self.cfg.num_envs > 1:
+                        scales[1:].uniform_(low, high)
+                    scales = scales.repeat(1, 3)
+                else:
+                    scales = torch.ones(self.cfg.num_envs, 3)
+                    if self.cfg.num_envs > 1:
+                        scales[1:].uniform_(low, high)
+                asset.apply_body_scale(scales)
+                print(f"Randomized MuJoCo {body_scale_rand.name} scale to {scales}")
             self.sim = MJSim(self.scene)
 
         

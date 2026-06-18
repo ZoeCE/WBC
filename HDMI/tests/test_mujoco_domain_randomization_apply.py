@@ -1,5 +1,9 @@
 import importlib
+from pathlib import Path
 
+import active_adaptation as aa
+from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
 import torch
 
 
@@ -63,6 +67,88 @@ def test_mujoco_object_root_physx_view_applies_body_randomization_per_env():
     assert box.mj_models[1].body_mass[box.body_adrs_read[0]] == 7.0
     assert torch.isclose(torch.tensor(box.mj_models[0].geom_friction[view.geom_adrs[0], 0]), torch.tensor(0.8, dtype=torch.float64))
     assert torch.isclose(torch.tensor(box.mj_models[1].geom_friction[view.geom_adrs[0], 0]), torch.tensor(0.4, dtype=torch.float64))
+
+
+def test_mujoco_object_view_applies_per_env_body_scale_to_object_geometry():
+    module = _mujoco_env_module()
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS.with_object("g1_29dof", object_asset_name="box")
+
+    scene = module.MJScene(SceneCfg(), num_envs=2, launch_viewer=False)
+    box = scene.rigid_objects["box"]
+
+    default_geom_size = [
+        torch.as_tensor(model.geom_size[box.geom_adrs].copy(), dtype=torch.float32)
+        for model in box.mj_models
+    ]
+    default_geom_pos = [
+        torch.as_tensor(model.geom_pos[box.geom_adrs].copy(), dtype=torch.float32)
+        for model in box.mj_models
+    ]
+    default_body_pos = [
+        torch.as_tensor(model.body_pos[box.body_adrs_read].copy(), dtype=torch.float32)
+        for model in box.mj_models
+    ]
+    scale = torch.tensor([[1.0, 1.0, 1.0], [2.0, 0.5, 1.5]])
+
+    box.apply_body_scale(scale)
+
+    assert torch.allclose(
+        torch.as_tensor(box.mj_models[0].geom_size[box.geom_adrs], dtype=torch.float32),
+        default_geom_size[0],
+    )
+    assert torch.allclose(
+        torch.as_tensor(box.mj_models[1].geom_size[box.geom_adrs], dtype=torch.float32),
+        default_geom_size[1] * scale[1],
+    )
+    assert torch.allclose(
+        torch.as_tensor(box.mj_models[1].geom_pos[box.geom_adrs], dtype=torch.float32),
+        default_geom_pos[1] * scale[1],
+    )
+    assert torch.allclose(
+        torch.as_tensor(box.mj_models[1].body_pos[box.body_adrs_read], dtype=torch.float32),
+        default_body_pos[1],
+    )
+    assert torch.allclose(box.cfg.spawn.scale, scale)
+
+
+def test_mujoco_simple_env_applies_body_scale_randomization_from_task_cfg():
+    root = Path(__file__).resolve().parents[1]
+    aa.set_backend("mujoco")
+    env = None
+    try:
+        with initialize_config_dir(config_dir=str((root / "cfg").resolve()), version_base=None):
+            cfg = compose(
+                config_name="train",
+                overrides=[
+                    "backend=mujoco",
+                    "task=G1/hdmi/push_box",
+                    "task.num_envs=2",
+                    "task.max_episode_length=4",
+                    "task.viewer.env_spacing=0",
+                    "task.randomization.body_scale.scale_range=[1.25,1.25]",
+                    "~task.observation.depth",
+                ],
+            )
+        OmegaConf.resolve(cfg)
+        OmegaConf.set_struct(cfg, False)
+        from active_adaptation.envs import SimpleEnv
+
+        env = SimpleEnv(cfg.task)
+        box = env.scene["box"]
+        scale = box.cfg.spawn.scale
+        geom_id = int(box.geom_adrs[0])
+        assert torch.allclose(scale, torch.tensor([[1.0, 1.0, 1.0], [1.25, 1.25, 1.25]]))
+        assert torch.allclose(
+            torch.as_tensor(box.mj_models[1].geom_size[geom_id], dtype=torch.float32),
+            torch.as_tensor(box.mj_models[0].geom_size[geom_id], dtype=torch.float32) * 1.25,
+        )
+    finally:
+        if env is not None:
+            env.close()
+        aa.set_backend("isaac")
 
 
 def test_mujoco_articulated_object_applies_joint_armature_and_custom_terms_per_env():

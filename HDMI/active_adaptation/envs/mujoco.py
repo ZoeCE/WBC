@@ -772,6 +772,23 @@ class MJObjectView:
             if int(self.mj_model.geom_bodyid[geom_id]) in body_adrs_set
         ], dtype=np.int32)
 
+        self.site_adrs = np.array([
+            site_id for site_id in range(self.mj_model.nsite)
+            if int(self.mj_model.site_bodyid[site_id]) in body_adrs_set
+        ], dtype=np.int32)
+        self.child_body_adrs_read = self.body_adrs_read[1:].copy()
+        self._default_geom_size = [
+            model.geom_size[self.geom_adrs].copy() for model in self.mj_models
+        ]
+        self._default_geom_pos = [
+            model.geom_pos[self.geom_adrs].copy() for model in self.mj_models
+        ]
+        self._default_site_pos = [
+            model.site_pos[self.site_adrs].copy() for model in self.mj_models
+        ]
+        self._default_child_body_pos = [
+            model.body_pos[self.child_body_adrs_read].copy() for model in self.mj_models
+        ]
         self.joint_mj_ids = np.array([
             mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_JOINT, name)
             for name in self.joint_names
@@ -842,6 +859,47 @@ class MJObjectView:
 
     def find_joints(self, name_keys: str | Sequence[str], preserve_order: bool = False):
         return string_utils.resolve_matching_names(name_keys, self.joint_names, preserve_order)
+
+    def apply_body_scale(self, scale: ArrayType):
+        scale_t = torch.as_tensor(scale, dtype=torch.float32)
+        if scale_t.ndim == 0:
+            scale_t = scale_t.reshape(1, 1)
+        elif scale_t.ndim == 1:
+            if scale_t.numel() == 3:
+                scale_t = scale_t.unsqueeze(0)
+            elif scale_t.numel() == self.num_instances:
+                scale_t = scale_t.unsqueeze(-1)
+            else:
+                raise ValueError(
+                    f"body scale must have 1, 3, or num_envs values, got shape {tuple(scale_t.shape)}."
+                )
+        if scale_t.ndim != 2 or scale_t.shape[-1] not in (1, 3):
+            raise ValueError(f"body scale must have shape (num_envs, 3), got {tuple(scale_t.shape)}.")
+        if scale_t.shape[-1] == 1:
+            scale_t = scale_t.expand(-1, 3)
+        if scale_t.shape[0] == 1:
+            scale_t = scale_t.expand(self.num_instances, -1).clone()
+        if scale_t.shape != (self.num_instances, 3):
+            raise ValueError(
+                f"body scale must have shape {(self.num_instances, 3)}, got {tuple(scale_t.shape)}."
+            )
+
+        for env_id, scale_row in enumerate(scale_t):
+            model = self.mj_models[env_id]
+            data = self.mj_datas[env_id]
+            scale_np = scale_row.detach().cpu().numpy().astype(np.float64)
+            if self.geom_adrs.size:
+                model.geom_size[self.geom_adrs] = self._default_geom_size[env_id] * scale_np
+                model.geom_pos[self.geom_adrs] = self._default_geom_pos[env_id] * scale_np
+            if self.site_adrs.size:
+                model.site_pos[self.site_adrs] = self._default_site_pos[env_id] * scale_np
+            if self.child_body_adrs_read.size:
+                model.body_pos[self.child_body_adrs_read] = self._default_child_body_pos[env_id] * scale_np
+            mujoco.mj_forward(model, data)
+
+        self.cfg.spawn.scale = scale_t.clone()
+        self.articulation.update(0.0)
+        self.update(0.0)
 
     def update(self, dt: float):
         body_pos_w = []
