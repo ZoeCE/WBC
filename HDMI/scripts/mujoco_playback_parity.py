@@ -203,8 +203,10 @@ def summarize_policy_rollout_metrics(metrics: MujocoPolicyRolloutMetrics) -> dic
     summary = {
         "policy_rollout_q_l2_shape": list(metrics.q_l2.shape),
         "policy_rollout_q_l2_max": float(metrics.q_l2.max().item()),
+        "policy_rollout_q_l2_mean": float(metrics.q_l2.mean().item()),
         "policy_rollout_body_pos_l2_shape": list(metrics.body_pos_l2.shape),
         "policy_rollout_body_pos_l2_max": float(metrics.body_pos_l2.max().item()),
+        "policy_rollout_body_pos_l2_mean": float(metrics.body_pos_l2.mean().item()),
         "policy_rollout_action_shape": list(metrics.actions.shape),
         "policy_rollout_joint_target_shape": list(metrics.joint_position_targets.shape),
         "policy_rollout_action_rate_l2_shape": list(metrics.action_rate_l2.shape),
@@ -212,10 +214,14 @@ def summarize_policy_rollout_metrics(metrics: MujocoPolicyRolloutMetrics) -> dic
         "policy_rollout_action_rate_l2_mean": float(metrics.action_rate_l2.mean().item()),
         "policy_rollout_reward_shape": None,
         "policy_rollout_reward_mean": None,
+        "policy_rollout_reward_min": None,
+        "policy_rollout_reward_max": None,
     }
     if metrics.reward is not None:
         summary["policy_rollout_reward_shape"] = list(metrics.reward.shape)
         summary["policy_rollout_reward_mean"] = float(metrics.reward.mean().item())
+        summary["policy_rollout_reward_min"] = float(metrics.reward.min().item())
+        summary["policy_rollout_reward_max"] = float(metrics.reward.max().item())
     return summary
 
 

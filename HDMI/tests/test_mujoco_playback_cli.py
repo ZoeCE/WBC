@@ -618,6 +618,8 @@ def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path,
             "--policy-path",
             str(policy_path),
             "--policy-rollout",
+            "--num-envs",
+            "2",
             "--reward-config-json",
             str(reward_cfg_path),
             "--steps",
@@ -628,16 +630,21 @@ def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path,
     assert exit_code == 0
     summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert summary["policy_path"] == str(policy_path)
-    assert summary["policy_rollout_q_l2_shape"] == [2, 1]
-    assert summary["policy_rollout_body_pos_l2_shape"] == [2, 1]
-    assert summary["policy_rollout_action_shape"] == [2, 1, 1]
-    assert summary["policy_rollout_joint_target_shape"] == [2, 1, 1]
+    assert summary["envs"] == 2
+    assert summary["policy_rollout_q_l2_shape"] == [2, 2]
+    assert summary["policy_rollout_body_pos_l2_shape"] == [2, 2]
+    assert summary["policy_rollout_action_shape"] == [2, 2, 1]
+    assert summary["policy_rollout_joint_target_shape"] == [2, 2, 1]
     assert summary["policy_rollout_q_l2_max"] >= 0.0
+    assert summary["policy_rollout_q_l2_mean"] >= 0.0
     assert summary["policy_rollout_body_pos_l2_max"] >= 0.0
-    assert summary["policy_rollout_action_rate_l2_shape"] == [2, 1, 1]
+    assert summary["policy_rollout_body_pos_l2_mean"] >= 0.0
+    assert summary["policy_rollout_action_rate_l2_shape"] == [2, 2, 1]
     assert summary["policy_rollout_action_rate_l2_max"] >= 0.0
-    assert summary["policy_rollout_reward_shape"] == [2, 1, 1]
+    assert summary["policy_rollout_reward_shape"] == [2, 2, 1]
     assert summary["policy_rollout_reward_mean"] == 1.0
+    assert summary["policy_rollout_reward_min"] == 1.0
+    assert summary["policy_rollout_reward_max"] == 1.0
 
 
 def test_mujoco_playback_parity_cli_fills_object_policy_observations_from_reference(tmp_path, capsys):
