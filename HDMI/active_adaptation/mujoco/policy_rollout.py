@@ -264,13 +264,64 @@ def _write_reference_frame_to_scene(scene: Any, reference: MujocoMotionReference
     robot.write_root_state_to_sim(root_state)
 
     joint_names = _reference_robot_joint_names(scene, robot, reference.requested_joint_names)
-    if not joint_names:
-        return
-    joint_ids, found_names = robot.find_joints(joint_names, preserve_order=True)
-    if found_names != joint_names:
-        raise ValueError(f"Reference joint order mismatch: expected {joint_names}, got {found_names}.")
-    joint_pos = _reference_joint_pos(reference, joint_names, step, scene.num_envs)
-    robot.write_joint_state_to_sim(joint_pos, torch.zeros_like(joint_pos), joint_ids=joint_ids)
+    if joint_names:
+        joint_ids, found_names = robot.find_joints(joint_names, preserve_order=True)
+        if found_names != joint_names:
+            raise ValueError(f"Reference joint order mismatch: expected {joint_names}, got {found_names}.")
+        joint_pos = _reference_joint_pos(reference, joint_names, step, scene.num_envs)
+        robot.write_joint_state_to_sim(joint_pos, torch.zeros_like(joint_pos), joint_ids=joint_ids)
+
+    _write_reference_objects_to_scene(scene, robot, reference, step)
+
+
+def _write_reference_objects_to_scene(
+    scene: Any,
+    robot: Any,
+    reference: MujocoMotionReference,
+    step: int,
+) -> None:
+    seen_ids: set[int] = set()
+    for object_view in (*scene.articulations.values(), *scene.rigid_objects.values()):
+        if object_view is robot:
+            continue
+        object_id = id(object_view)
+        if object_id in seen_ids:
+            continue
+        seen_ids.add(object_id)
+
+        reference_object_body_name = _reference_object_body_name(reference, object_view)
+        if reference_object_body_name is not None:
+            body_index = reference.body_names.index(reference_object_body_name)
+            object_pos = reference.body_pos_w[step, body_index].unsqueeze(0).expand(scene.num_envs, -1)
+            object_quat = reference.body_quat_w[step, body_index].unsqueeze(0).expand(scene.num_envs, -1)
+            object_view.write_root_link_pose_to_sim(torch.cat([object_pos, object_quat], dim=-1))
+
+        object_joint_names = _reference_object_joint_names(reference.requested_joint_names, object_view)
+        if not object_joint_names:
+            continue
+        object_joint_ids, found_names = object_view.find_joints(object_joint_names, preserve_order=True)
+        if found_names != object_joint_names:
+            raise ValueError(
+                f"Reference object joint order mismatch: expected {object_joint_names}, got {found_names}."
+            )
+        object_joint_pos = _reference_joint_pos(reference, object_joint_names, step, scene.num_envs)
+        object_view.write_joint_state_to_sim(
+            object_joint_pos,
+            torch.zeros_like(object_joint_pos),
+            joint_ids=object_joint_ids,
+        )
+
+
+def _reference_object_body_name(reference: MujocoMotionReference, object_view: Any) -> str | None:
+    for body_name in getattr(object_view, "body_names", ()) or ():
+        if body_name in reference.body_names:
+            return body_name
+    return None
+
+
+def _reference_object_joint_names(joint_names: Sequence[str], object_view: Any) -> list[str]:
+    object_joint_names = set(getattr(object_view, "joint_names", ()) or ())
+    return [joint_name for joint_name in joint_names if joint_name in object_joint_names]
 
 
 def _reference_robot_joint_names(scene: Any, robot: Any, joint_names: Sequence[str]) -> list[str]:

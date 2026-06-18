@@ -8,6 +8,7 @@ import yaml
 from tensordict.nn import TensorDictModule
 
 from active_adaptation.mujoco import MujocoMotionReference
+from active_adaptation.mujoco import policy_rollout
 from active_adaptation.mujoco.policy import MujocoPolicyBundle
 from active_adaptation.mujoco.policy_rollout import run_mujoco_policy_rollout
 
@@ -23,7 +24,13 @@ def _write_motion_dir(motion_dir: Path, body_names: list[str], joint_names: list
     )
     body_quat_w = np.zeros((2, 2, 4), dtype=np.float32)
     body_quat_w[..., 0] = 1.0
-    joint_pos = np.array([[0.10], [0.30]], dtype=np.float32)
+    joint_start = np.linspace(
+        0.10,
+        0.10 + 0.20 * (len(joint_names) - 1),
+        num=len(joint_names),
+        dtype=np.float32,
+    )
+    joint_pos = np.stack((joint_start, joint_start + 0.20), axis=0)
     np.savez_compressed(
         motion_dir / "motion.npz",
         body_pos_w=body_pos_w,
@@ -120,6 +127,49 @@ def _write_full_object_pose_policy_bundle(
         )
     )
     return MujocoPolicyBundle.load(policy_path)
+
+
+def test_reference_frame_write_initializes_object_root_and_joints(tmp_path):
+    module = importlib.import_module("active_adaptation.envs.mujoco")
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS.with_object("g1_29dof", object_asset_name="door")
+
+    scene = module.MJScene(SceneCfg(), num_envs=2, launch_viewer=False)
+    robot = scene["robot"]
+    door = scene["door"]
+    object_body_name = door.body_names[0]
+    robot_joint_name = robot.joint_names[0]
+    object_joint_name = door.joint_names[0]
+    body_names = [robot.body_names[0], object_body_name]
+    joint_names = [robot_joint_name, object_joint_name]
+    motion_dir = tmp_path / "motion-object-reference-frame"
+    _write_motion_dir(motion_dir, body_names, joint_names)
+    reference = MujocoMotionReference.from_motion_dir(
+        motion_dir=motion_dir,
+        body_names=body_names,
+        joint_names=joint_names,
+        root_body_name=robot.body_names[0],
+        future_steps=[0],
+    )
+
+    policy_rollout._write_reference_frame_to_scene(scene, reference, step=0)
+    scene.update(0.0)
+
+    object_body_index = reference.body_names.index(object_body_name)
+    expected_object_pos = (
+        reference.body_pos_w[0, object_body_index].unsqueeze(0).expand(scene.num_envs, -1)
+    )
+    expected_object_quat = (
+        reference.body_quat_w[0, object_body_index].unsqueeze(0).expand(scene.num_envs, -1)
+    )
+    object_joint_index = reference.joint_names.index(object_joint_name)
+    expected_object_joint_pos = reference.joint_pos[0, object_joint_index].expand(scene.num_envs)
+
+    assert torch.allclose(door.data.body_link_pos_w[:, 0], expected_object_pos, atol=1e-5)
+    assert torch.allclose(door.data.body_link_quat_w[:, 0], expected_object_quat, atol=1e-5)
+    assert torch.allclose(door.data.joint_pos[:, 0], expected_object_joint_pos, atol=1e-5)
 
 
 def test_policy_rollout_steps_mujoco_scene_and_reports_parity(tmp_path):
