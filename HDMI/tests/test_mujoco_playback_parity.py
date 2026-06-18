@@ -27,6 +27,44 @@ def test_playback_parity_computes_joint_and_body_l2_per_env():
     assert torch.equal(metrics.reward, torch.tensor([0.75]))
 
 
+def test_playback_parity_preserves_time_and_env_axes_for_motion_rollouts():
+    q_mujoco = torch.tensor(
+        [
+            [[1.0, 2.0], [3.0, 4.0]],
+            [[5.0, 6.0], [7.0, 8.0]],
+        ]
+    )
+    q_ref = torch.zeros_like(q_mujoco)
+    body_pos_mujoco_w = torch.tensor(
+        [
+            [
+                [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+                [[0.0, 0.0, 3.0], [4.0, 0.0, 0.0]],
+            ],
+            [
+                [[1.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+                [[0.0, 2.0, 2.0], [0.0, 0.0, 1.0]],
+            ],
+        ]
+    )
+    reward = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
+
+    metrics = compute_playback_parity(
+        q_mujoco,
+        q_ref,
+        body_pos_mujoco_w,
+        torch.zeros_like(body_pos_mujoco_w),
+        reward,
+    )
+
+    assert torch.allclose(metrics.q_l2, torch.linalg.vector_norm(q_mujoco, dim=-1))
+    assert torch.allclose(
+        metrics.body_pos_l2,
+        torch.tensor([[5.0**0.5, 25.0**0.5], [2.0**0.5, 9.0**0.5]]),
+    )
+    assert torch.equal(metrics.reward, reward)
+
+
 def test_playback_parity_accepts_motion_reference_future_slice():
     ref_joint_pos_future = torch.tensor([[[0.2, 0.4], [9.0, 9.0]]])
     ref_body_pos_future_w = torch.tensor([[[[0.0, 0.0, 1.0]], [[9.0, 9.0, 9.0]]]])

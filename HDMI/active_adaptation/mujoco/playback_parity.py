@@ -48,7 +48,7 @@ def compute_playback_parity(
         raise ValueError(f"body position tensors must end in xyz dim 3, got {body_pos_mujoco_w.shape}.")
 
     q_l2 = torch.linalg.vector_norm(q_mujoco - q_ref, dim=-1)
-    body_pos_delta = (body_pos_mujoco_w - body_pos_ref_w).reshape(body_pos_mujoco_w.shape[0], -1)
+    body_pos_delta = (body_pos_mujoco_w - body_pos_ref_w).flatten(start_dim=-2)
     body_pos_l2 = torch.linalg.vector_norm(body_pos_delta, dim=-1)
     if reward is not None and reward.ndim == 0:
         reward = reward.unsqueeze(0)
