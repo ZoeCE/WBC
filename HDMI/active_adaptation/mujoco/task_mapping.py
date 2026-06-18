@@ -16,6 +16,20 @@ HDMI_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
+class NameIndexMapping:
+    name: str
+    motion_index: int
+    mujoco_index: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "motion_index": self.motion_index,
+            "mujoco_index": self.mujoco_index,
+        }
+
+
+@dataclass(frozen=True)
 class TaskMotionMappingReport:
     task_path: Path
     motion_dir: Path
@@ -29,6 +43,8 @@ class TaskMotionMappingReport:
     extra_object_names: tuple[str, ...]
     motion_body_names: tuple[str, ...]
     motion_joint_names: tuple[str, ...]
+    body_name_mapping: tuple[NameIndexMapping, ...]
+    joint_name_mapping: tuple[NameIndexMapping, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -44,6 +60,8 @@ class TaskMotionMappingReport:
             "extra_object_names": list(self.extra_object_names),
             "motion_body_names": list(self.motion_body_names),
             "motion_joint_names": list(self.motion_joint_names),
+            "body_name_mapping": [entry.to_dict() for entry in self.body_name_mapping],
+            "joint_name_mapping": [entry.to_dict() for entry in self.joint_name_mapping],
         }
 
 
@@ -102,8 +120,14 @@ def validate_task_motion_mapping(
         raise ValueError(f"{task_path}: extra_object_names are absent from motion bodies: {missing_extra_motion}.")
 
     manifest = load_mujoco_asset_manifest(robot_cfg.mjcf_path)
-    build_name_index(motion_body_names, manifest.body_names, label=f"{task_path.name} body")
-    build_name_index(motion_joint_names, manifest.tracking_joint_names, label=f"{task_path.name} joint")
+    body_name_indices = build_name_index(motion_body_names, manifest.body_names, label=f"{task_path.name} body")
+    joint_name_indices = build_name_index(
+        motion_joint_names,
+        manifest.tracking_joint_names,
+        label=f"{task_path.name} joint",
+    )
+    body_name_mapping = _build_name_mapping(motion_body_names, body_name_indices)
+    joint_name_mapping = _build_name_mapping(motion_joint_names, joint_name_indices)
 
     root_body_name = _optional_str(command_cfg.get("root_body_name"))
     if root_body_name is not None and root_body_name not in motion_body_names:
@@ -132,6 +156,8 @@ def validate_task_motion_mapping(
         extra_object_names=extra_object_names,
         motion_body_names=motion_body_names,
         motion_joint_names=motion_joint_names,
+        body_name_mapping=body_name_mapping,
+        joint_name_mapping=joint_name_mapping,
     )
 
 
@@ -148,6 +174,18 @@ def validate_all_task_motion_mappings(
             continue
         reports.append(validate_task_motion_mapping(task_path, robot_name=robot_name))
     return tuple(reports)
+
+
+def _build_name_mapping(
+    motion_names: Sequence[str],
+    mujoco_indices: Sequence[int],
+) -> tuple[NameIndexMapping, ...]:
+    if len(motion_names) != len(mujoco_indices):
+        raise ValueError("motion names and MuJoCo indices must have the same length.")
+    return tuple(
+        NameIndexMapping(name=name, motion_index=motion_index, mujoco_index=int(mujoco_index))
+        for motion_index, (name, mujoco_index) in enumerate(zip(motion_names, mujoco_indices))
+    )
 
 
 def _resolve_reference_object_body_name(
