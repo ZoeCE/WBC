@@ -11,6 +11,9 @@ from .reward_parity import (
     eef_contact_exp,
     joint_position_tracking_product,
     keypoint_position_tracking_product,
+    object_joint_position_tracking,
+    object_orientation_tracking,
+    object_position_tracking,
 )
 
 __all__ = [
@@ -26,5 +29,8 @@ __all__ = [
     "eef_contact_exp",
     "joint_position_tracking_product",
     "keypoint_position_tracking_product",
+    "object_joint_position_tracking",
+    "object_orientation_tracking",
+    "object_position_tracking",
     "compute_playback_parity",
 ]

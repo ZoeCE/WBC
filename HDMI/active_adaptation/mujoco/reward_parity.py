@@ -54,6 +54,60 @@ def joint_position_tracking_product(
     return torch.exp(-error.mean(dim=1) / sigma).unsqueeze(1)
 
 
+def object_position_tracking(
+    object_pos_w: torch.Tensor,
+    ref_object_pos_w: torch.Tensor,
+    sigma: float = 0.25,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI object_pos_tracking rewards."""
+    _require_same_shape("object_pos_w", object_pos_w, "ref_object_pos_w", ref_object_pos_w)
+    _require_last_dim("object_pos_w", object_pos_w, 3)
+    if object_pos_w.ndim != 2:
+        raise ValueError(f"object_pos_w must have shape (num_envs, 3), got {tuple(object_pos_w.shape)}.")
+    if sigma <= 0:
+        raise ValueError(f"sigma must be positive, got {sigma}.")
+
+    object_pos_error = (ref_object_pos_w - object_pos_w).norm(dim=-1)
+    return torch.exp(-object_pos_error / sigma).unsqueeze(1)
+
+
+def object_orientation_tracking(
+    object_quat_w: torch.Tensor,
+    ref_object_quat_w: torch.Tensor,
+    sigma: float = 0.25,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI object_ori_tracking rewards."""
+    _require_same_shape("object_quat_w", object_quat_w, "ref_object_quat_w", ref_object_quat_w)
+    _require_last_dim("object_quat_w", object_quat_w, 4)
+    if object_quat_w.ndim != 2:
+        raise ValueError(f"object_quat_w must have shape (num_envs, 4), got {tuple(object_quat_w.shape)}.")
+    if sigma <= 0:
+        raise ValueError(f"sigma must be positive, got {sigma}.")
+
+    object_diff_quat = _quat_mul(_quat_conjugate(ref_object_quat_w), object_quat_w)
+    object_ori_error = torch.norm(_axis_angle_from_quat(object_diff_quat), dim=-1)
+    return torch.exp(-object_ori_error / sigma).unsqueeze(1)
+
+
+def object_joint_position_tracking(
+    object_joint_pos: torch.Tensor,
+    ref_object_joint_pos: torch.Tensor,
+    sigma: float = 0.25,
+) -> torch.Tensor:
+    """MuJoCo tensor parity for HDMI object_joint_pos_tracking rewards."""
+    _require_same_shape("object_joint_pos", object_joint_pos, "ref_object_joint_pos", ref_object_joint_pos)
+    if object_joint_pos.ndim != 1:
+        raise ValueError(
+            f"object_joint_pos must have shape (num_envs,) for HDMI single-object-joint rewards, "
+            f"got {tuple(object_joint_pos.shape)}."
+        )
+    if sigma <= 0:
+        raise ValueError(f"sigma must be positive, got {sigma}.")
+
+    joint_pos_error = (ref_object_joint_pos - object_joint_pos).abs()
+    return torch.exp(-joint_pos_error / sigma).unsqueeze(1)
+
+
 def eef_contact_exp(
     contact_eef_pos_w: torch.Tensor,
     contact_target_pos_w: torch.Tensor,
@@ -154,6 +208,40 @@ def _yaw_quat(quat: torch.Tensor) -> torch.Tensor:
     yaw = torch.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
     zeros = torch.zeros_like(yaw)
     return torch.stack((torch.cos(yaw / 2), zeros, zeros, torch.sin(yaw / 2)), dim=-1)
+
+
+def _quat_conjugate(quat: torch.Tensor) -> torch.Tensor:
+    return torch.cat((quat[..., 0:1], -quat[..., 1:]), dim=-1)
+
+
+def _quat_mul(lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+    if lhs.shape != rhs.shape:
+        raise ValueError(f"Quaternion shape mismatch: {tuple(lhs.shape)} != {tuple(rhs.shape)}.")
+
+    w1, x1, y1, z1 = torch.unbind(lhs, dim=-1)
+    w2, x2, y2, z2 = torch.unbind(rhs, dim=-1)
+    return torch.stack(
+        (
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ),
+        dim=-1,
+    )
+
+
+def _axis_angle_from_quat(quat: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
+    quat = torch.where(quat[..., 0:1] < 0.0, -quat, quat)
+    mag = torch.linalg.norm(quat[..., 1:], dim=-1)
+    half_angle = torch.atan2(mag, quat[..., 0])
+    angle = 2.0 * half_angle
+    sin_half_angles_over_angles = torch.where(
+        angle.abs() > eps,
+        torch.sin(half_angle) / angle,
+        0.5 - angle * angle / 48,
+    )
+    return quat[..., 1:4] / sin_half_angles_over_angles.unsqueeze(-1)
 
 
 def _quat_rotate_inverse(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:

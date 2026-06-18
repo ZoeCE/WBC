@@ -1,5 +1,6 @@
 import torch
 
+from active_adaptation.mujoco import reward_parity
 from active_adaptation.mujoco.reward_parity import (
     eef_contact_exp,
     joint_position_tracking_product,
@@ -108,3 +109,58 @@ def test_eef_contact_exp_matches_hdmi_contact_reward_formula():
     active_reward = torch.exp(-pos_error / 0.5) * torch.exp(contact_frc / 2.0)
     expected = (active_reward * ref_object_contact.float() * 0.8 + 1 - ref_object_contact.float()).mean(dim=-1)
     assert torch.allclose(reward, expected.unsqueeze(-1))
+
+
+def test_object_position_tracking_matches_hdmi_formula():
+    object_pos_w = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
+    ref_object_pos_w = torch.tensor([[0.3, 0.4, 0.0], [1.0, 2.2, 0.0]])
+
+    reward = reward_parity.object_position_tracking(
+        object_pos_w=object_pos_w,
+        ref_object_pos_w=ref_object_pos_w,
+        sigma=0.5,
+    )
+
+    object_pos_error = (ref_object_pos_w - object_pos_w).norm(dim=-1)
+    expected = torch.exp(-object_pos_error / 0.5).unsqueeze(1)
+    assert torch.allclose(reward, expected)
+
+
+def test_object_orientation_tracking_matches_hdmi_formula():
+    sqrt_half = 2 ** -0.5
+    object_quat_w = torch.tensor(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [sqrt_half, 0.0, 0.0, sqrt_half],
+        ]
+    )
+    ref_object_quat_w = torch.tensor(
+        [
+            [sqrt_half, 0.0, 0.0, sqrt_half],
+            [sqrt_half, 0.0, 0.0, sqrt_half],
+        ]
+    )
+
+    reward = reward_parity.object_orientation_tracking(
+        object_quat_w=object_quat_w,
+        ref_object_quat_w=ref_object_quat_w,
+        sigma=0.25,
+    )
+
+    expected = torch.exp(-torch.tensor([torch.pi / 2, 0.0]) / 0.25).unsqueeze(1)
+    assert torch.allclose(reward, expected, atol=1e-6)
+
+
+def test_object_joint_position_tracking_matches_hdmi_formula():
+    object_joint_pos = torch.tensor([0.0, 1.5, -0.2])
+    ref_object_joint_pos = torch.tensor([0.4, 1.0, -0.2])
+
+    reward = reward_parity.object_joint_position_tracking(
+        object_joint_pos=object_joint_pos,
+        ref_object_joint_pos=ref_object_joint_pos,
+        sigma=0.2,
+    )
+
+    joint_pos_error = (ref_object_joint_pos - object_joint_pos).abs()
+    expected = torch.exp(-joint_pos_error / 0.2).unsqueeze(1)
+    assert torch.allclose(reward, expected)
