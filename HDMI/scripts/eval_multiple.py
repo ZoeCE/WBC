@@ -7,7 +7,7 @@ import sys
 from tqdm import tqdm
 from omegaconf import OmegaConf, DictConfig
 
-from isaaclab.app import AppLauncher
+import active_adaptation as aa
 
 import wandb
 import logging
@@ -31,8 +31,7 @@ def main(cfg: DictConfig):
     
     # --- 2. Initialize Env and Policy Shell ---
     # This is done only once to save time
-    app_launcher = AppLauncher(OmegaConf.to_container(cfg.app))
-    simulation_app = app_launcher.app
+    simulation_app = _configure_backend_and_app(cfg)
 
     env, agent, vecnorm = make_env_policy(cfg)
     
@@ -135,8 +134,23 @@ def main(cfg: DictConfig):
     print(termcolor.colored(f"Saved all results to: {path}", "green"))
 
     # --- 5. Cleanup ---
-    os._exit(0) # Use os._exit to force exit in Isaac Sim
-    simulation_app.close()
+    env.close()
+    if simulation_app is not None:
+        simulation_app.close()
+        os._exit(0) # Use os._exit to force exit in Isaac Sim
+    return final_output
+
+
+def _configure_backend_and_app(cfg: DictConfig):
+    backend = cfg.get("backend", aa.get_backend())
+    aa.set_backend(backend)
+    if backend == "mujoco":
+        return None
+
+    from isaaclab.app import AppLauncher
+
+    app_launcher = AppLauncher(OmegaConf.to_container(cfg.app))
+    return app_launcher.app
 
 
 if __name__ == "__main__":
