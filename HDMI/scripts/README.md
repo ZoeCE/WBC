@@ -27,6 +27,7 @@ Entry points that wire Hydra configs, Isaac Sim, and PPO policies.
 ## Evaluation & visualization
 - `play.py` — loads a checkpoint (local path or `run:<wandb-run>`) and runs rollouts; can export ONNX when `export_policy=true`.
 - `eval.py` / `eval_multiple.py` / `eval_run.py` — batch evaluation helpers; `eval_run.py` can fetch and visualize remote W&B runs.
+- `mujoco_policy_export_audit.py` — checks that `play.py export_policy=true` produced a loadable `.pt + .yaml` bundle and that its exported body/joint metadata maps to the task motion and MuJoCo MJCF names.
 - `vis/` — MuJoCo visualization utilities (e.g., `mujoco_mocap_viewer.py`, `motion_data_publisher.py`).
 
 ## Typical commands
@@ -39,4 +40,11 @@ python scripts/train.py algo=ppo_roa_finetune task=G1/hdmi/move_suitcase checkpo
 
 # Evaluate Student
 python scripts/play.py algo=ppo_roa_finetune task=G1/hdmi/move_suitcase checkpoint_path=run:<student-wandb_run_path>
+
+# Export policy for MuJoCo parity
+python scripts/play.py algo=ppo_roa_finetune task=G1/hdmi/push_box checkpoint_path=run:<student-wandb_run_path> export_policy=true export_policy_exit=true headless=true backend=isaac
+
+# Gate the exported policy before MuJoCo playback/rollout parity
+PYTHONPATH=. python scripts/mujoco_policy_export_audit.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --checkpoint-path run:<student-wandb_run_path> --require-policy
+PYTHONPATH=. python scripts/mujoco_playback_parity.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --policy-path scripts/exports/G1PushBox/policy-<run>-<checkpoint>.pt --policy-rollout --max-q-l2 1e-5 --max-body-pos-l2 0.05
 ```
