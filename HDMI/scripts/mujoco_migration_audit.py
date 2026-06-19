@@ -31,6 +31,16 @@ DEFAULT_TASK_DIR = HDMI_ROOT / "cfg/task/G1/hdmi"
 REQUIRED_COMPONENT_REPORT_COVERAGE = tuple(COMPONENT_SPECS)
 REQUIRED_PLAYBACK_THRESHOLD_KEYS = ("max_q_l2", "max_body_pos_l2", "min_reward_mean")
 REQUIRED_PLAYBACK_METRIC_KEYS = ("q_l2_max", "body_pos_l2_max", "reward_mean")
+REQUIRED_POLICY_ROLLOUT_THRESHOLD_KEYS = (
+    "max_policy_rollout_q_l2",
+    "max_policy_rollout_body_pos_l2",
+    "min_policy_rollout_reward_mean",
+)
+REQUIRED_POLICY_ROLLOUT_METRIC_KEYS = (
+    "policy_rollout_q_l2_max",
+    "policy_rollout_body_pos_l2_max",
+    "policy_rollout_reward_mean",
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -390,6 +400,8 @@ def _build_playback_parity_report_gate(
     failures = list(gate["failures"])
     required_thresholds = list(REQUIRED_PLAYBACK_THRESHOLD_KEYS)
     required_metrics = list(REQUIRED_PLAYBACK_METRIC_KEYS)
+    required_policy_rollout_thresholds = list(REQUIRED_POLICY_ROLLOUT_THRESHOLD_KEYS)
+    required_policy_rollout_metrics = list(REQUIRED_POLICY_ROLLOUT_METRIC_KEYS)
 
     for entry in gate["reports"]:
         report = entry["report"]
@@ -415,11 +427,41 @@ def _build_playback_parity_report_gate(
                 }
             )
 
+        policy_rollout_present = any(
+            report.get(key) is not None for key in required_policy_rollout_metrics
+        )
+        if policy_rollout_present:
+            missing_policy_rollout_metrics = [
+                key for key in required_policy_rollout_metrics if report.get(key) is None
+            ]
+            if missing_policy_rollout_metrics:
+                failures.append(
+                    {
+                        "report_path": entry["path"],
+                        "reason": "missing_policy_rollout_metrics",
+                        "missing_metrics": missing_policy_rollout_metrics,
+                    }
+                )
+
+            missing_policy_rollout_thresholds = [
+                key for key in required_policy_rollout_thresholds if key not in threshold_keys
+            ]
+            if missing_policy_rollout_thresholds:
+                failures.append(
+                    {
+                        "report_path": entry["path"],
+                        "reason": "missing_policy_rollout_thresholds",
+                        "missing_thresholds": missing_policy_rollout_thresholds,
+                    }
+                )
+
     return {
         **gate,
         "gate_passed": not failures,
         "required_metrics": required_metrics,
         "required_thresholds": required_thresholds,
+        "required_policy_rollout_metrics": required_policy_rollout_metrics,
+        "required_policy_rollout_thresholds": required_policy_rollout_thresholds,
         "failures": failures,
     }
 
