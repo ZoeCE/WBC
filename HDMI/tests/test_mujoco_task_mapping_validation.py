@@ -84,6 +84,57 @@ def test_task_mapping_cli_prints_json_summary(capsys):
 
 
 
+def test_task_mapping_cli_prints_compact_task_dir_summary(capsys):
+    module = _load_mapping_cli_module()
+    task_dir = ROOT / "cfg/task/G1/hdmi"
+
+    try:
+        exit_code = module.main(
+            [
+                "--task-dir",
+                str(task_dir),
+                "--summary",
+                "--require-nonempty",
+            ]
+        )
+    except SystemExit as exc:
+        exit_code = exc.code
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    summary = json.loads(captured.out)
+    assert summary["num_tasks"] >= 10
+    assert "reports" not in summary
+    door_summary = next(
+        task for task in summary["tasks"] if task["task_path"].endswith("open_door-feet.yaml")
+    )
+    assert door_summary["object_asset_name"] == "door"
+    assert door_summary["reference_object_body_name"] == "door"
+    assert door_summary["num_body_mappings"] == door_summary["num_motion_bodies"]
+    assert door_summary["num_joint_mappings"] == door_summary["num_motion_joints"]
+
+
+def test_task_mapping_cli_require_nonempty_fails_empty_task_dir(tmp_path, capsys):
+    module = _load_mapping_cli_module()
+
+    try:
+        exit_code = module.main(
+            [
+                "--task-dir",
+                str(tmp_path),
+                "--summary",
+                "--require-nonempty",
+            ]
+        )
+    except SystemExit as exc:
+        exit_code = exc.code
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert json.loads(captured.out) == {"num_tasks": 0, "tasks": []}
+
+
+
 def test_task_mapping_cli_reports_exported_policy_motion_mjcf_name_indices(tmp_path, capsys):
     module = _load_mapping_cli_module()
     task_path = ROOT / "cfg/task/G1/hdmi/open_door-feet.yaml"

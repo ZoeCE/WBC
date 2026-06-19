@@ -25,21 +25,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.task_yaml,
                 robot_name=args.robot_name,
             )
+            payload = _policy_report_summary(report) if args.summary else report.to_dict()
         else:
             report = validate_task_motion_mapping(args.task_yaml, robot_name=args.robot_name)
-        print(json.dumps(report.to_dict(), sort_keys=True))
+            payload = _task_report_summary(report) if args.summary else report.to_dict()
+        print(json.dumps(payload, sort_keys=True))
         return 0
 
     reports = validate_all_task_motion_mappings(args.task_dir, robot_name=args.robot_name)
-    print(
-        json.dumps(
-            {
-                "num_tasks": len(reports),
-                "reports": [report.to_dict() for report in reports],
-            },
-            sort_keys=True,
-        )
-    )
+    if args.summary:
+        payload = _task_reports_summary(reports)
+    else:
+        payload = {
+            "num_tasks": len(reports),
+            "reports": [report.to_dict() for report in reports],
+        }
+    print(json.dumps(payload, sort_keys=True))
+    if args.require_nonempty and not reports:
+        return 1
     return 0
 
 
@@ -70,7 +73,55 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=None,
         help="Optional exported policy YAML to validate against the task motion and MuJoCo MJCF names.",
     )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print compact counts suitable for CI logs instead of full per-name mappings.",
+    )
+    parser.add_argument(
+        "--require-nonempty",
+        action="store_true",
+        help="Return exit code 1 when --task-dir contains no object task mappings.",
+    )
     return parser.parse_args(argv)
+
+
+def _task_reports_summary(reports) -> dict:
+    return {
+        "num_tasks": len(reports),
+        "tasks": [_task_report_summary(report) for report in reports],
+    }
+
+
+def _task_report_summary(report) -> dict:
+    return {
+        "task_path": str(report.task_path),
+        "motion_dir": str(report.motion_dir),
+        "object_asset_name": report.object_asset_name,
+        "object_type": report.object_type,
+        "task_object_body_name": report.task_object_body_name,
+        "reference_object_body_name": report.reference_object_body_name,
+        "object_joint_name": report.object_joint_name,
+        "extra_object_names": list(report.extra_object_names),
+        "num_motion_bodies": len(report.motion_body_names),
+        "num_motion_joints": len(report.motion_joint_names),
+        "num_body_mappings": len(report.body_name_mapping),
+        "num_joint_mappings": len(report.joint_name_mapping),
+    }
+
+
+def _policy_report_summary(report) -> dict:
+    payload = _task_report_summary(report.task_report)
+    payload.update(
+        {
+            "policy_config_path": str(report.policy_config_path),
+            "num_policy_bodies": len(report.policy_body_names),
+            "num_policy_joints": len(report.policy_joint_names),
+            "num_policy_body_mappings": len(report.policy_body_name_mapping),
+            "num_policy_joint_mappings": len(report.policy_joint_name_mapping),
+        }
+    )
+    return payload
 
 
 if __name__ == "__main__":
