@@ -312,7 +312,10 @@ def _policy_state_from_scene(
         root_ang_vel_b=robot.data.root_ang_vel_b,
         projected_gravity_b=robot.data.projected_gravity_b,
         joint_pos=robot.data.joint_pos[:, observation_joint_ids],
-        joint_pos_offset=torch.zeros_like(robot.data.joint_pos[:, observation_joint_ids]),
+        joint_pos_offset=_observation_joint_pos_offset(
+            policy_bundle,
+            robot.data.joint_pos[:, observation_joint_ids],
+        ),
         applied_action=applied_action,
         action_history=action_history,
         ref_body_pos_future_w=fields.ref_body_pos_future_w,
@@ -325,6 +328,17 @@ def _policy_state_from_scene(
         robot_root_quat_w=robot.data.root_link_quat_w,
         **object_state,
     )
+
+
+def _observation_joint_pos_offset(
+    policy_bundle: MujocoPolicyBundle,
+    observation_joint_pos: torch.Tensor,
+) -> torch.Tensor:
+    offset = policy_bundle.observation_default_joint_pos.to(
+        device=observation_joint_pos.device,
+        dtype=observation_joint_pos.dtype,
+    )
+    return offset.unsqueeze(0).expand_as(observation_joint_pos)
 
 
 def _policy_object_state_from_scene(scene: Any, policy_bundle: MujocoPolicyBundle) -> dict[str, torch.Tensor]:

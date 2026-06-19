@@ -64,6 +64,40 @@ def _write_zero_policy_bundle(tmp_path: Path, joint_name: str) -> MujocoPolicyBu
     return MujocoPolicyBundle.load(policy_path)
 
 
+def _write_joint_pos_policy_bundle(
+    tmp_path: Path,
+    joint_name: str,
+    *,
+    default_joint_pos: float,
+) -> MujocoPolicyBundle:
+    module = TensorDictModule(
+        torch.nn.Linear(1, 1, bias=False),
+        in_keys=["policy"],
+        out_keys=["action"],
+    )
+    module.module.weight.data.fill_(1.0)
+    policy_path = tmp_path / "policy-joint-pos-final.pt"
+    torch.save(module, policy_path)
+    (tmp_path / "policy-joint-pos-final.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "observation": {
+                    "policy": {
+                        "joint_pos_history": {
+                            "joint_names": [joint_name],
+                            "history_steps": [0],
+                        }
+                    }
+                },
+                "action_scale": 1.0,
+                "policy_joint_names": [joint_name],
+                "default_joint_pos": {joint_name: default_joint_pos},
+            }
+        )
+    )
+    return MujocoPolicyBundle.load(policy_path)
+
+
 def _write_object_policy_bundle(tmp_path: Path, joint_name: str, object_body_name: str) -> MujocoPolicyBundle:
     module = TensorDictModule(
         torch.nn.Linear(7, 1, bias=False),
@@ -212,6 +246,44 @@ def test_policy_rollout_steps_mujoco_scene_and_reports_parity(tmp_path):
     assert torch.allclose(metrics.actions, torch.zeros_like(metrics.actions))
     assert metrics.action_rate_l2.shape == (2, 1, 1)
     assert torch.allclose(metrics.action_rate_l2, torch.zeros_like(metrics.action_rate_l2))
+
+
+def test_policy_rollout_offsets_joint_pos_history_by_exported_default_joint_pos(tmp_path):
+    module = importlib.import_module("active_adaptation.envs.mujoco")
+    from active_adaptation.assets_mjcf import ROBOTS
+
+    class SceneCfg:
+        robot = ROBOTS.with_object("g1_29dof", object_asset_name="door")
+
+    scene = module.MJScene(SceneCfg(), num_envs=1, launch_viewer=False)
+    robot = scene["robot"]
+    body_names = [robot.body_names[0]]
+    joint_name = robot.joint_names[0]
+    motion_dir = tmp_path / "motion-joint-offset"
+    _write_motion_dir(motion_dir, body_names, [joint_name])
+    reference = MujocoMotionReference.from_motion_dir(
+        motion_dir=motion_dir,
+        body_names=body_names,
+        joint_names=[joint_name],
+        root_body_name=robot.body_names[0],
+        future_steps=[0],
+    )
+    policy_bundle = _write_joint_pos_policy_bundle(
+        tmp_path,
+        joint_name,
+        default_joint_pos=0.5,
+    )
+
+    metrics = run_mujoco_policy_rollout(
+        scene=scene,
+        policy_bundle=policy_bundle,
+        reference=reference,
+        steps=[0],
+        decimation=1,
+    )
+
+    expected_observation = reference.joint_pos[0, 0] - 0.5
+    assert torch.allclose(metrics.actions[0, 0, 0], expected_observation, atol=1e-5)
 
 
 def test_policy_rollout_computes_closed_loop_reward_from_spec(tmp_path):
