@@ -51,4 +51,7 @@ PYTHONPATH=. python scripts/mujoco_playback_parity.py --task-yaml cfg/task/G1/hd
 # Gate a MuJoCo PPO training smoke or longer run without W&B
 PYTHONPATH=. python scripts/train.py backend=mujoco task=G1/hdmi/push_box task.num_envs=8 algo.train_every=8 total_frames=128 wandb.mode=disabled eval_render=false train_summary_path=/tmp/wbc_mujoco_summary_gate.json
 PYTHONPATH=. python scripts/mujoco_train_summary_gate.py /tmp/wbc_mujoco_summary_gate.json --require-backend mujoco --require-checkpoint --min-env-frames 128 --min-eval-metric performance/inference_time 0.0 --max-eval-metric performance/inference_time 0.05
+
+# Aggregate MuJoCo migration evidence across payloads, task mapping, and training
+PYTHONPATH=. python scripts/mujoco_migration_audit.py --require-payloads --task-dir cfg/task/G1/hdmi --require-task-mappings --min-task-mappings 1 --training-summary /tmp/wbc_mujoco_summary_gate.json --require-training-summaries --min-training-summaries 1 --min-training-env-frames 128 --min-training-eval-metric eval/object_tracking/return 0.05 --max-training-eval-metric performance/inference_time 0.05
 ```
