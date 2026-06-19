@@ -64,10 +64,63 @@ def _write_train_summary(tmp_path: Path, *, env_frames: int = 128) -> Path:
     return summary_path
 
 
-def test_migration_audit_passes_with_payloads_task_mapping_and_training_summary(tmp_path, capsys):
+def _write_policy_export_report(tmp_path: Path, *, gate_passed: bool = True) -> Path:
+    report_path = tmp_path / "policy_export_audit.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "gate_passed": gate_passed,
+                "missing_requirements": [] if gate_passed else ["policy_task_motion_mjcf_mapping"],
+                "policy_exists": True,
+                "policy_config_exists": True,
+                "policy_loadable": True,
+                "policy_mapping_ok": gate_passed,
+                "policy_path": "scripts/exports/G1PushBox/policy-test.pt",
+                "policy_config_path": "scripts/exports/G1PushBox/policy-test.yaml",
+                "policy_action_dim": 23,
+                "num_policy_joint_mappings": 23,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return report_path
+
+
+def _write_playback_parity_report(tmp_path: Path, *, parity_passed: bool = True) -> Path:
+    report_path = tmp_path / "playback_parity.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "parity_passed": parity_passed,
+                "threshold_failures": []
+                if parity_passed
+                else [
+                    {
+                        "metric": "policy_rollout_q_l2_max",
+                        "actual": 2.0,
+                        "limit": 1.0,
+                        "comparison": "<=",
+                    }
+                ],
+                "q_l2_max": 0.0,
+                "body_pos_l2_max": 0.01,
+                "reward_mean": 1.0,
+                "policy_rollout_q_l2_max": 0.2 if parity_passed else 2.0,
+                "policy_rollout_body_pos_l2_max": 0.05,
+                "policy_rollout_reward_mean": 1.1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return report_path
+
+
+def test_migration_audit_passes_with_payloads_mapping_training_policy_and_playback(tmp_path, capsys):
     audit = _load_audit_module()
     manifest_path = _write_payload_manifest(tmp_path, present=True)
     summary_path = _write_train_summary(tmp_path, env_frames=128)
+    policy_report_path = _write_policy_export_report(tmp_path, gate_passed=True)
+    playback_report_path = _write_playback_parity_report(tmp_path, parity_passed=True)
 
     exit_code = audit.main(
         [
@@ -92,6 +145,12 @@ def test_migration_audit_passes_with_payloads_task_mapping_and_training_summary(
             "--max-training-eval-metric",
             "performance/inference_time",
             "0.01",
+            "--policy-export-report",
+            str(policy_report_path),
+            "--require-policy-export",
+            "--playback-parity-report",
+            str(playback_report_path),
+            "--require-playback-parity",
         ]
     )
 
@@ -103,12 +162,18 @@ def test_migration_audit_passes_with_payloads_task_mapping_and_training_summary(
     assert report["task_mapping"]["gate_passed"] is True
     assert report["task_mapping"]["num_tasks"] >= 1
     assert report["training"]["gate_passed"] is True
+    assert report["policy_export"]["gate_passed"] is True
+    assert report["policy_export"]["num_reports"] == 1
+    assert report["playback_parity"]["gate_passed"] is True
+    assert report["playback_parity"]["num_reports"] == 1
 
 
 def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, capsys):
     audit = _load_audit_module()
     manifest_path = _write_payload_manifest(tmp_path, present=False)
     summary_path = _write_train_summary(tmp_path, env_frames=32)
+    policy_report_path = _write_policy_export_report(tmp_path, gate_passed=False)
+    playback_report_path = _write_playback_parity_report(tmp_path, parity_passed=False)
 
     exit_code = audit.main(
         [
@@ -127,6 +192,12 @@ def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, 
             "--require-training-summaries",
             "--min-training-env-frames",
             "128",
+            "--policy-export-report",
+            str(policy_report_path),
+            "--require-policy-export",
+            "--playback-parity-report",
+            str(playback_report_path),
+            "--require-playback-parity",
         ]
     )
 
@@ -137,3 +208,5 @@ def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, 
     assert "payloads" in failure_components
     assert "task_mapping" in failure_components
     assert "training" in failure_components
+    assert "policy_export" in failure_components
+    assert "playback_parity" in failure_components

@@ -49,6 +49,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_training_eval_metrics=_parse_metric_thresholds(args.max_training_eval_metric),
         min_training_train_metrics=_parse_metric_thresholds(args.min_training_train_metric),
         max_training_train_metrics=_parse_metric_thresholds(args.max_training_train_metric),
+        policy_export_reports=[Path(path) for path in args.policy_export_report],
+        require_policy_export=args.require_policy_export,
+        playback_parity_reports=[Path(path) for path in args.playback_parity_report],
+        require_playback_parity=args.require_playback_parity,
     )
     print(json.dumps(report, sort_keys=True))
     return 0 if report["migration_passed"] else 1
@@ -73,6 +77,10 @@ def build_migration_audit(
     max_training_eval_metrics: dict[str, float] | None = None,
     min_training_train_metrics: dict[str, float] | None = None,
     max_training_train_metrics: dict[str, float] | None = None,
+    policy_export_reports: Sequence[Path] = (),
+    require_policy_export: bool = False,
+    playback_parity_reports: Sequence[Path] = (),
+    require_playback_parity: bool = False,
 ) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
 
@@ -138,12 +146,44 @@ def build_migration_audit(
             }
         )
 
+    policy_export_required = require_policy_export or bool(policy_export_reports)
+    policy_export = _build_json_report_gate(
+        report_paths=policy_export_reports,
+        pass_key="gate_passed",
+        require_reports=require_policy_export,
+    )
+    if policy_export_required and not policy_export["gate_passed"]:
+        failures.append(
+            {
+                "component": "policy_export",
+                "reason": "policy_export_gate_failed",
+                "failures": policy_export.get("failures", []),
+            }
+        )
+
+    playback_parity_required = require_playback_parity or bool(playback_parity_reports)
+    playback_parity = _build_json_report_gate(
+        report_paths=playback_parity_reports,
+        pass_key="parity_passed",
+        require_reports=require_playback_parity,
+    )
+    if playback_parity_required and not playback_parity["gate_passed"]:
+        failures.append(
+            {
+                "component": "playback_parity",
+                "reason": "playback_parity_gate_failed",
+                "failures": playback_parity.get("failures", []),
+            }
+        )
+
     return {
         "migration_passed": not failures,
         "failures": failures,
         "payloads": payloads,
         "task_mapping": task_mapping,
         "training": training,
+        "policy_export": policy_export,
+        "playback_parity": playback_parity,
     }
 
 
@@ -268,6 +308,69 @@ def _build_training_report(
     )
 
 
+def _build_json_report_gate(
+    *,
+    report_paths: Sequence[Path],
+    pass_key: str,
+    require_reports: bool,
+) -> dict[str, Any]:
+    reports = []
+    failures: list[dict[str, Any]] = []
+
+    for path in report_paths:
+        report, load_failure = _load_json_report(path)
+        if load_failure is not None:
+            failures.append(load_failure)
+            continue
+        reports.append({"path": str(path), "report": report})
+        if report.get(pass_key) is not True:
+            failures.append(
+                {
+                    "report_path": str(path),
+                    "reason": f"{pass_key}_not_true",
+                    "actual": report.get(pass_key),
+                    "missing_requirements": report.get("missing_requirements"),
+                    "threshold_failures": report.get("threshold_failures"),
+                }
+            )
+
+    if require_reports and not reports:
+        failures.append(
+            {
+                "reason": "num_reports_below_min",
+                "actual": len(reports),
+                "limit": 1,
+            }
+        )
+
+    return {
+        "gate_passed": not failures,
+        "pass_key": pass_key,
+        "num_reports": len(reports),
+        "report_paths": [str(path) for path in report_paths],
+        "reports": reports,
+        "failures": failures,
+    }
+
+
+def _load_json_report(path: Path) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {}, {
+            "report_path": str(path),
+            "reason": "report_load_error",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    if not isinstance(report, dict):
+        return {}, {
+            "report_path": str(path),
+            "reason": "report_not_mapping",
+            "actual_type": type(report).__name__,
+        }
+    return report, None
+
+
 def _training_gate_requested(
     *,
     training_summaries: Sequence[Path],
@@ -323,6 +426,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--max-training-eval-metric", nargs=2, action="append", default=[], metavar=("KEY", "VALUE"))
     parser.add_argument("--min-training-train-metric", nargs=2, action="append", default=[], metavar=("KEY", "VALUE"))
     parser.add_argument("--max-training-train-metric", nargs=2, action="append", default=[], metavar=("KEY", "VALUE"))
+
+    parser.add_argument("--policy-export-report", action="append", default=[], metavar="PATH")
+    parser.add_argument("--require-policy-export", action="store_true")
+    parser.add_argument("--playback-parity-report", action="append", default=[], metavar="PATH")
+    parser.add_argument("--require-playback-parity", action="store_true")
     return parser.parse_args(argv)
 
 
