@@ -46,5 +46,5 @@ python scripts/play.py algo=ppo_roa_finetune task=G1/hdmi/push_box checkpoint_pa
 
 # Gate the exported policy before MuJoCo playback/rollout parity
 PYTHONPATH=. python scripts/mujoco_policy_export_audit.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --checkpoint-path run:<student-wandb_run_path> --require-policy
-PYTHONPATH=. python scripts/mujoco_playback_parity.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --policy-path scripts/exports/G1PushBox/policy-<run>-<checkpoint>.pt --policy-rollout --max-q-l2 1e-5 --max-body-pos-l2 0.05
+PYTHONPATH=. python scripts/mujoco_playback_parity.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --policy-path scripts/exports/G1PushBox/policy-<run>-<checkpoint>.pt --policy-rollout --max-q-l2 1e-5 --max-body-pos-l2 0.05 --max-policy-rollout-q-l2 1.0 --max-policy-rollout-body-pos-l2 0.2 --min-policy-rollout-reward-mean 0.0
 ```

@@ -820,7 +820,90 @@ def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path,
     assert summary["policy_rollout_reward_min"] == 1.0
     assert summary["policy_rollout_reward_max"] == 1.0
 
+def test_mujoco_playback_parity_cli_passes_policy_rollout_threshold_gate(tmp_path, capsys):
+    object_body_name, object_joint_name = _write_motion_dir(tmp_path)
+    joint_name = json.loads((tmp_path / "meta.json").read_text())["joint_names"][0]
+    policy_path = _write_rollout_policy_bundle(tmp_path, joint_name)
+    reward_cfg_path = tmp_path / "rollout-reward.json"
+    reward_cfg_path.write_text(json.dumps({"loco": {"survival": {"weight": 1.0}}}))
+    script = _load_cli_module()
 
+    exit_code = script.main(
+        [
+            "--motion-dir",
+            str(tmp_path),
+            "--object-name",
+            "door",
+            "--object-body-name",
+            object_body_name,
+            "--object-joint-name",
+            object_joint_name,
+            "--policy-path",
+            str(policy_path),
+            "--policy-rollout",
+            "--num-envs",
+            "2",
+            "--reward-config-json",
+            str(reward_cfg_path),
+            "--steps",
+            "0,1",
+            "--max-policy-rollout-q-l2",
+            "10.0",
+            "--max-policy-rollout-body-pos-l2",
+            "10.0",
+            "--min-policy-rollout-reward-mean",
+            "0.99",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["parity_passed"] is True
+    assert summary["threshold_failures"] == []
+    assert summary["thresholds"] == {
+        "max_policy_rollout_q_l2": 10.0,
+        "max_policy_rollout_body_pos_l2": 10.0,
+        "min_policy_rollout_reward_mean": 0.99,
+    }
+
+
+def test_mujoco_playback_parity_cli_fails_policy_rollout_threshold_gate(tmp_path, capsys):
+    object_body_name, object_joint_name = _write_motion_dir(tmp_path)
+    joint_name = json.loads((tmp_path / "meta.json").read_text())["joint_names"][0]
+    policy_path = _write_rollout_policy_bundle(tmp_path, joint_name)
+    script = _load_cli_module()
+
+    exit_code = script.main(
+        [
+            "--motion-dir",
+            str(tmp_path),
+            "--object-name",
+            "door",
+            "--object-body-name",
+            object_body_name,
+            "--object-joint-name",
+            object_joint_name,
+            "--policy-path",
+            str(policy_path),
+            "--policy-rollout",
+            "--steps",
+            "0,1",
+            "--max-policy-rollout-q-l2",
+            "-1.0",
+        ]
+    )
+
+    assert exit_code == 1
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["parity_passed"] is False
+    assert summary["threshold_failures"] == [
+        {
+            "metric": "policy_rollout_q_l2_max",
+            "limit": -1.0,
+            "actual": summary["policy_rollout_q_l2_max"],
+            "comparison": "<=",
+        }
+    ]
 
 def test_mujoco_playback_parity_cli_writes_per_step_trace_json(tmp_path, capsys):
     object_body_name, object_joint_name = _write_motion_dir(tmp_path)

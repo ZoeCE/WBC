@@ -377,6 +377,24 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=None,
         help="Fail with exit code 1 when reward_mean is absent or below this threshold.",
     )
+    parser.add_argument(
+        "--max-policy-rollout-q-l2",
+        type=float,
+        default=None,
+        help="Fail with exit code 1 when policy_rollout_q_l2_max exceeds this threshold.",
+    )
+    parser.add_argument(
+        "--max-policy-rollout-body-pos-l2",
+        type=float,
+        default=None,
+        help="Fail with exit code 1 when policy_rollout_body_pos_l2_max exceeds this threshold.",
+    )
+    parser.add_argument(
+        "--min-policy-rollout-reward-mean",
+        type=float,
+        default=None,
+        help="Fail with exit code 1 when policy_rollout_reward_mean is absent or below this threshold.",
+    )
     return parser.parse_args(argv)
 
 
@@ -385,6 +403,24 @@ def _apply_threshold_gate(summary: dict[str, Any], args: argparse.Namespace) -> 
         ("max_q_l2", args.max_q_l2, "q_l2_max", "<="),
         ("max_body_pos_l2", args.max_body_pos_l2, "body_pos_l2_max", "<="),
         ("min_reward_mean", args.min_reward_mean, "reward_mean", ">="),
+        (
+            "max_policy_rollout_q_l2",
+            args.max_policy_rollout_q_l2,
+            "policy_rollout_q_l2_max",
+            "<=",
+        ),
+        (
+            "max_policy_rollout_body_pos_l2",
+            args.max_policy_rollout_body_pos_l2,
+            "policy_rollout_body_pos_l2_max",
+            "<=",
+        ),
+        (
+            "min_policy_rollout_reward_mean",
+            args.min_policy_rollout_reward_mean,
+            "policy_rollout_reward_mean",
+            ">=",
+        ),
     ]
     thresholds = {name: float(limit) for name, limit, _metric, _comparison in checks if limit is not None}
     if not thresholds:
