@@ -5,14 +5,17 @@ import sys
 import hydra
 import argparse
 
+FILE_PATH = os.path.dirname(os.path.abspath(__file__))
+PACKAGE_ROOT = os.path.dirname(FILE_PATH)
+if PACKAGE_ROOT not in sys.path:
+    sys.path.insert(0, PACKAGE_ROOT)
+
 from omegaconf import OmegaConf
 from scripts.play import main as play_main
 from scripts.eval import main as eval_main
 
 play = play_main.__wrapped__
 eval = eval_main.__wrapped__
-
-FILE_PATH = os.path.dirname(__file__)
 
 
 def _parse_args(argv=None):

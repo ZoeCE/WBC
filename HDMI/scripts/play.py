@@ -4,9 +4,15 @@ import numpy as np
 import einops
 import itertools
 import os
+import sys
 import datetime
 import re
 from omegaconf import OmegaConf
+
+FILE_PATH = os.path.dirname(os.path.abspath(__file__))
+PACKAGE_ROOT = os.path.dirname(FILE_PATH)
+if PACKAGE_ROOT not in sys.path:
+    sys.path.insert(0, PACKAGE_ROOT)
 
 from torchrl.envs.utils import set_exploration_type, ExplorationType
 from tensordict.nn import TensorDictSequential

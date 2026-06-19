@@ -475,6 +475,35 @@ def _run_train_sequential_script_smoke(
     )
 
 
+def _run_render_script_smoke(tmp_path, task: str, run_name: str):
+    run_dir = tmp_path / run_name
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/render.py"),
+        "backend=mujoco",
+        f"task={task}",
+        "task.num_envs=1",
+        "task.max_episode_length=4",
+        "task.viewer.env_spacing=0",
+        "algo.compile=false",
+        "checkpoint_path=null",
+        "wandb.mode=disabled",
+        "headless=true",
+        "eval_render=false",
+        f"hydra.run.dir={run_dir}",
+    ]
+
+    return subprocess.run(
+        command,
+        cwd=ROOT.parent,
+        env={**os.environ, "WANDB_SILENT": "true"},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=240,
+    )
+
+
 def test_mujoco_train_script_runs_minimal_ppo_loop(tmp_path):
     result = _run_train_script_smoke(tmp_path, "G1/tracking/walk", "mujoco-train-smoke")
 
@@ -517,6 +546,13 @@ def test_mujoco_object_train_script_runs_batched_ppo_loop(tmp_path):
     assert summary["env_frames"] == 32
     assert Path(summary["checkpoint_final"]).is_file()
     assert summary["eval"]["performance/inference_time"] >= 0.0
+
+
+def test_mujoco_render_script_runs_minimal_loop_without_viewer(tmp_path):
+    result = _run_render_script_smoke(tmp_path, "G1/hdmi/push_box", "mujoco-render-smoke")
+
+    assert result.returncode == 0, result.stdout[-4000:]
+    assert "Average inference time" in result.stdout
 
 
 def test_train_sequential_script_propagates_child_failure(tmp_path):

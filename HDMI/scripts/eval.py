@@ -4,8 +4,14 @@ import numpy as np
 import einops
 import time
 import sys
+import os
 from tqdm import tqdm
 from omegaconf import OmegaConf, DictConfig
+
+FILE_PATH = os.path.dirname(os.path.abspath(__file__))
+PACKAGE_ROOT = os.path.dirname(FILE_PATH)
+if PACKAGE_ROOT not in sys.path:
+    sys.path.insert(0, PACKAGE_ROOT)
 
 import active_adaptation as aa
 
@@ -14,7 +20,6 @@ import logging
 from tqdm import tqdm
 from scripts.helpers import make_env_policy, evaluate
 
-import os
 import datetime
 import termcolor
 
@@ -93,4 +98,3 @@ def _configure_backend_and_app(cfg: DictConfig):
 
 if __name__ == "__main__":
     main()
-

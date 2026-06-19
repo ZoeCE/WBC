@@ -1,16 +1,18 @@
 # Training & Evaluation Scripts
 
-Entry points that wire Hydra configs, Isaac Sim, and PPO policies.
+Entry points that wire Hydra configs, the selected simulator backend, and PPO policies.
 
 ## Training Execution Flow (`train.py`)
 
-1. **Hydra + W&B setup**
-   - Hydra loads `cfg/train.yaml` and constructs the Isaac Sim `AppLauncher`.
+1. **Hydra + backend + W&B setup**
+   - Hydra loads `cfg/train.yaml`, then `backend=<isaac|mujoco>` selects the simulator path.
+   - `backend=mujoco` builds the MuJoCo env directly and does not launch Isaac Sim.
+   - `backend=isaac` preserves the original Isaac Sim `AppLauncher` path.
    - W&B is initialized from `cfg.wandb` (project, mode, tags).
 
 2. **Create environment and policy**
    - `make_env_policy(cfg)` builds:
-     - the vectorized Isaac env (Active Adaptation `_Env` subclass),
+     - the vectorized Active Adaptation `_Env` subclass for the selected backend,
      - the PPO policy (`ppo` / `ppo_roa` / `ppo_amp`),
      - optional VecNorm transform.
 
@@ -32,14 +34,14 @@ Entry points that wire Hydra configs, Isaac Sim, and PPO policies.
 
 ## Typical commands
 ```bash
-# Train (teacher policy)
-python scripts/train.py algo=ppo_roa_train task=G1/hdmi/move_suitcase
+# Train a MuJoCo teacher or smoke policy
+python scripts/train.py backend=mujoco algo=ppo_roa_train task=G1/hdmi/push_box wandb.mode=disabled eval_render=false
 
-# Finetune student
-python scripts/train.py algo=ppo_roa_finetune task=G1/hdmi/move_suitcase checkpoint_path=run:<teacher-wandb_run_path>
+# Finetune a MuJoCo student from a local or W&B checkpoint
+python scripts/train.py backend=mujoco algo=ppo_roa_finetune task=G1/hdmi/push_box checkpoint_path=<local_or_run_checkpoint> wandb.mode=disabled eval_render=false
 
-# Evaluate Student
-python scripts/play.py algo=ppo_roa_finetune task=G1/hdmi/move_suitcase checkpoint_path=run:<student-wandb_run_path>
+# Evaluate or play a MuJoCo student
+python scripts/play.py backend=mujoco algo=ppo_roa_finetune task=G1/hdmi/push_box checkpoint_path=<local_or_run_checkpoint> headless=true
 
 # Export policy for MuJoCo parity
 python scripts/play.py algo=ppo_roa_finetune task=G1/hdmi/push_box checkpoint_path=<local_or_run_checkpoint> export_policy=true export_policy_exit=true export_policy_benchmark_iters=0 export_onnx_policy=false headless=true backend=mujoco
