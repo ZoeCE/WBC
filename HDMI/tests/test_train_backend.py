@@ -264,6 +264,29 @@ def test_eval_run_parser_accepts_mujoco_playback_flag():
     assert args.play_mujoco is True
 
 
+def test_eval_run_play_mujoco_export_exits_after_policy_export():
+    script = _load_eval_run_module()
+    cfg = OmegaConf.create(
+        {
+            "backend": "isaac",
+            "app": {"headless": False, "enable_cameras": True},
+            "task": {"num_envs": 16},
+        }
+    )
+    args = script._parse_args(["--run_path", "entity/project/run", "--play-mujoco", "--export"])
+
+    target = script._apply_execution_mode_overrides(cfg, args)
+
+    assert target == "play"
+    assert cfg.backend == "mujoco"
+    assert cfg.app.headless is True
+    assert cfg.task.num_envs == 1
+    assert cfg.export_policy is True
+    assert cfg.export_policy_exit is True
+    assert cfg.export_policy_benchmark_iters == 0
+    assert cfg.export_onnx_policy is False
+
+
 def test_play_mujoco_asset_meta_uses_mjcf_cfg_without_isaac_assets_import():
     script = _load_play_module()
     robot_cfg = SimpleNamespace(

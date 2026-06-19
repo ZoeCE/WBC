@@ -31,6 +31,33 @@ def _parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def _apply_execution_mode_overrides(cfg, args):
+    assert not (args.play and args.play_mujoco), "Cannot play and play_mujoco at the same time"
+    if args.play_mujoco:
+        cfg["backend"] = "mujoco"
+        cfg["app"]["headless"] = True
+        cfg["task"]["num_envs"] = 1
+        cfg["export_policy"] = args.export
+        if args.export:
+            cfg["export_policy_exit"] = True
+            cfg["export_policy_benchmark_iters"] = 0
+            cfg["export_onnx_policy"] = False
+        return "play"
+    if args.play:
+        cfg["app"]["headless"] = False
+        cfg["task"]["num_envs"] = 16
+        cfg["export_policy"] = args.export
+        return "play"
+    if args.video:
+        cfg["task"]["num_envs"] = 16
+        cfg["eval_render"] = True
+        cfg["render_mode"] = "rgb_array"
+        cfg["app"]["enable_cameras"] = True
+        cfg["app"]["headless"] = False
+        cfg["task"]["max_episode_length"] = 1000
+    return "eval"
+
+
 def main():
     args = _parse_args()
 
@@ -103,26 +130,10 @@ def main():
         if args.command:
             cfg["task"]["command"] = _cfg.task.command
     
-    assert not (args.play and args.play_mujoco), "Cannot play and play_mujoco at the same time"
-    if args.play_mujoco:
-        cfg["backend"] = "mujoco"
-        cfg["app"]["headless"] = True
-        cfg["task"]["num_envs"] = 1
-        cfg["export_policy"] = args.export
-        play(cfg)
-    elif args.play:
-        cfg["app"]["headless"] = False
-        cfg["task"]["num_envs"] = 16
-        cfg["export_policy"] = args.export
+    target = _apply_execution_mode_overrides(cfg, args)
+    if target == "play":
         play(cfg)
     else:
-        if args.video:
-            cfg["task"]["num_envs"] = 16
-            cfg["eval_render"] = True
-            cfg["render_mode"] = "rgb_array"
-            cfg["app"]["enable_cameras"] = True
-            cfg["app"]["headless"] = False
-            cfg["task"]["max_episode_length"] = 1000
         eval(cfg)
 
 
