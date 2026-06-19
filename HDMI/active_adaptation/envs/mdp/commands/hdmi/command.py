@@ -457,10 +457,12 @@ class RobotObjectTracking(RobotTracking):
     def sample_init(self, env_ids):
         super().sample_init(env_ids)
          
-        init_object_pos = self._motion_reset.body_pos_w[:, self.object_body_id_motion]
-        init_object_quat = self._motion_reset.body_quat_w[:, self.object_body_id_motion]
+        init_object_pos = self._motion_reset.body_pos_w[:, self.object_body_id_motion].clone()
+        init_object_quat = self._motion_reset.body_quat_w[:, self.object_body_id_motion].clone()
 
         rand_samples = sample_uniform(self.object_pose_range[:, 0], self.object_pose_range[:, 1], (len(env_ids), 6), device=self.device)
+        if not self.env.training:
+            rand_samples.fill_(0.0)
 
         init_object_pos += rand_samples[:, 0:3]
         orientations_delta = quat_from_euler_xyz(rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5])
@@ -475,8 +477,8 @@ class RobotObjectTracking(RobotTracking):
         self.object.write_root_com_velocity_to_sim(init_object_state_w[:, 7:], env_ids=env_ids)
 
         for object_, object_body_id_motion in zip(self.extra_objects, self.extra_object_body_id_motion):
-            init_object_pos = self._motion_reset.body_pos_w[:, object_body_id_motion]
-            init_object_quat = self._motion_reset.body_quat_w[:, object_body_id_motion]
+            init_object_pos = self._motion_reset.body_pos_w[:, object_body_id_motion].clone()
+            init_object_quat = self._motion_reset.body_quat_w[:, object_body_id_motion].clone()
             
             init_object_pos += rand_samples[:, 0:3]
             init_object_quat = quat_mul(init_object_quat, orientations_delta)

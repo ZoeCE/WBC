@@ -109,6 +109,35 @@ def _compose_mujoco_train_smoke_cfg():
     return cfg
 
 
+def _compose_mujoco_object_eval_reset_cfg():
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    with initialize_config_dir(config_dir=str((ROOT / "cfg").resolve()), version_base=None):
+        cfg = compose(
+            config_name="train",
+            overrides=[
+                "backend=mujoco",
+                "task=G1/hdmi/push_box",
+                "task.num_envs=1",
+                "task.max_episode_length=4",
+                "task.viewer.env_spacing=0",
+                "task.randomization={}",
+                "task.command.object_pose_range.x=[1.0,1.0]",
+                "task.command.object_pose_range.y=[0.0,0.0]",
+                "task.command.object_pose_range.z=[0.0,0.0]",
+                "task.command.object_pose_range.roll=[0.0,0.0]",
+                "task.command.object_pose_range.pitch=[0.0,0.0]",
+                "task.command.object_pose_range.yaw=[0.0,0.0]",
+                "algo.train_every=2",
+                "wandb.mode=disabled",
+                "total_frames=2",
+            ],
+        )
+    OmegaConf.resolve(cfg)
+    OmegaConf.set_struct(cfg, False)
+    return cfg
+
+
 def test_train_config_declares_backend_override_key():
     cfg = yaml.safe_load((ROOT / "cfg/train.yaml").read_text())
 
@@ -388,6 +417,34 @@ def test_mujoco_train_smoke_builds_env_policy_and_steps_once():
         assert tensordict["next", "reward"].shape[0] == 1
         assert tensordict["next", "done"].shape == (1, 1)
         assert next_carry.batch_size == carry.batch_size
+    finally:
+        if env is not None:
+            env.close()
+        aa.set_backend("isaac")
+
+
+def test_mujoco_eval_reset_keeps_object_on_reference_pose():
+    aa.set_backend("mujoco")
+    env = None
+    try:
+        cfg = _compose_mujoco_object_eval_reset_cfg()
+        from scripts.helpers import make_env_policy
+
+        env, _policy, _vecnorm = make_env_policy(cfg)
+        env.base_env.eval()
+        env.eval()
+        env.reset()
+
+        base_env = env.base_env
+        command = base_env.command_manager
+        reference_frame = command.dataset.get_slice(command.motion_ids, command.t, 1).squeeze(1)
+        expected_object_pos_w = (
+            reference_frame.body_pos_w[:, command.object_body_id_motion]
+            + base_env.scene.env_origins
+        )
+        actual_object_pos_w = command.object.data.root_link_pos_w
+
+        assert torch.allclose(actual_object_pos_w, expected_object_pos_w, atol=1e-5)
     finally:
         if env is not None:
             env.close()
