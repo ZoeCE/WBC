@@ -236,7 +236,10 @@ def evaluate(
 
             if render:
                 frames.append(env.render(mode=render_mode))
-    inference_time = np.mean(inference_time[5:])
+    timed_samples = inference_time[5:]
+    if not timed_samples:
+        timed_samples = inference_time
+    inference_time = float(np.mean(timed_samples)) if timed_samples else 0.0
     print(f"Average inference time: {inference_time:.4f} s")
 
     policy_trajs: TensorDictBase = torch.stack(policy_trajs, dim=1)

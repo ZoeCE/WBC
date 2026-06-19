@@ -440,6 +440,7 @@ def test_mujoco_object_train_script_runs_minimal_ppo_loop(tmp_path):
 
     assert result.returncode == 0, result.stdout[-4000:]
     assert "Average inference time" in result.stdout
+    assert "Average inference time: nan" not in result.stdout
 
 
 def test_train_sequential_script_propagates_child_failure(tmp_path):

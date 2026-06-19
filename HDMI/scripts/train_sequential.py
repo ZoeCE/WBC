@@ -25,15 +25,20 @@ from tensordict.nn import TensorDictModuleBase
 from tensordict import TensorDict
 
 # local import
-from scripts.helpers import make_env_policy, EpisodeStats, evaluate
 import multiprocessing
+
+FILE_PATH = os.path.dirname(os.path.abspath(__file__))
+PACKAGE_ROOT = os.path.dirname(FILE_PATH)
+if PACKAGE_ROOT not in sys.path:
+    sys.path.insert(0, PACKAGE_ROOT)
+
+from scripts.helpers import make_env_policy, EpisodeStats, evaluate
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
-FILE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(FILE_PATH, "..", "cfg")
 
 
