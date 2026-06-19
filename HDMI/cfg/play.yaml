@@ -20,6 +20,7 @@ export_policy: false
 export_onnx_policy: true
 export_onnx_required: false
 export_policy_exit: false
+export_policy_benchmark_iters: 1000
 
 camera_follow: true
 

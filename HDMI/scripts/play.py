@@ -54,12 +54,6 @@ def main(cfg):
         fake_input["context_adapt_hx"] = torch.zeros(128)
         fake_input = fake_input.unsqueeze(0)
 
-        def test(m, x):
-            start = time.perf_counter()
-            for _ in range(1000):
-                m(x)
-            return (time.perf_counter() - start) / 1000
-        
         FILE_PATH = os.path.dirname(__file__)
         
         deploy_policy = copy.deepcopy(policy.get_rollout_policy("deploy"))
@@ -67,7 +61,13 @@ def main(cfg):
         ood_detector = ObsOODDetector(deploy_policy.in_keys, sigma=5.0)
         _policy = TensorDictSequential(obs_norm, ood_detector, deploy_policy).cpu()
         
-        print(f"Inference time of policy: {test(_policy, fake_input)}")
+        benchmark_time = _benchmark_policy(
+            _policy,
+            fake_input,
+            iters=int(cfg.get("export_policy_benchmark_iters", 1000)),
+        )
+        if benchmark_time is not None:
+            print(f"Inference time of policy: {benchmark_time}")
 
         # Use new filename format with wandb_run_id and checkpoint_num
         os.makedirs(os.path.join(FILE_PATH, "exports", cfg.task.name), exist_ok=True)
@@ -272,6 +272,16 @@ def main(cfg):
     if simulation_app is not None:
         simulation_app.close()
 
+
+def _benchmark_policy(policy, fake_input, *, iters: int = 1000):
+    if iters <= 0:
+        return None
+    import time
+
+    start = time.perf_counter()
+    for _ in range(iters):
+        policy(fake_input)
+    return (time.perf_counter() - start) / iters
 
 def _configure_backend_and_app(cfg):
     backend = cfg.get("backend", aa.get_backend())

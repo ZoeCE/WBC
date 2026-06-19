@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import torch
 from hydra import compose, initialize_config_dir
 import active_adaptation as aa
 from omegaconf import OmegaConf
@@ -111,6 +112,11 @@ def test_train_config_declares_backend_override_key():
     cfg = yaml.safe_load((ROOT / "cfg/train.yaml").read_text())
 
     assert cfg["backend"] == "isaac"
+
+
+def test_play_config_declares_export_policy_benchmark_iters():
+    cfg = yaml.safe_load((ROOT / "cfg/play.yaml").read_text())
+    assert cfg["export_policy_benchmark_iters"] == 1000
 
 
 def test_train_sequential_config_declares_backend_override_key():
@@ -291,6 +297,25 @@ def test_play_export_finds_command_observation_group_when_present():
     command_group = {"ref_body_pos_future_local": {}}
 
     assert script._get_exported_command_observation_group({"command": command_group}) is command_group
+
+
+def test_play_export_policy_benchmark_can_be_skipped():
+    script = _load_play_module()
+    calls = []
+
+    class Policy:
+        def __call__(self, td):
+            calls.append(td)
+            return td
+
+    elapsed = script._benchmark_policy(
+        Policy(),
+        {"policy": torch.zeros(1, 2)},
+        iters=0,
+    )
+
+    assert elapsed is None
+    assert calls == []
 
 
 def test_mujoco_backend_can_import_simple_env_without_isaac_app():
