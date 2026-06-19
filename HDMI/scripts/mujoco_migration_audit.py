@@ -22,11 +22,13 @@ from active_adaptation.mujoco.task_mapping import (  # noqa: E402
     TaskMotionMappingReport,
     validate_all_task_motion_mappings,
 )
+from mujoco_component_audit import COMPONENT_SPECS  # noqa: E402
 from mujoco_train_summary_gate import build_gate_report  # noqa: E402
 
 
 DEFAULT_PAYLOAD_MANIFEST = HDMI_ROOT / "mujoco_external_payloads.yaml"
 DEFAULT_TASK_DIR = HDMI_ROOT / "cfg/task/G1/hdmi"
+REQUIRED_COMPONENT_REPORT_COVERAGE = tuple(COMPONENT_SPECS)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -181,10 +183,10 @@ def build_migration_audit(
         )
 
     component_reports_required = require_component_reports or bool(component_reports)
-    component_report = _build_json_report_gate(
+    component_report = _build_component_report_gate(
         report_paths=component_reports,
-        pass_key="component_gate_passed",
         require_reports=require_component_reports,
+        required_components=REQUIRED_COMPONENT_REPORT_COVERAGE,
     )
     if component_reports_required and not component_report["gate_passed"]:
         failures.append(
@@ -370,6 +372,40 @@ def _build_json_report_gate(
         "num_reports": len(reports),
         "report_paths": [str(path) for path in report_paths],
         "reports": reports,
+        "failures": failures,
+    }
+
+
+def _build_component_report_gate(
+    *,
+    report_paths: Sequence[Path],
+    require_reports: bool,
+    required_components: Sequence[str],
+) -> dict[str, Any]:
+    gate = _build_json_report_gate(
+        report_paths=report_paths,
+        pass_key="component_gate_passed",
+        require_reports=require_reports,
+    )
+    failures = list(gate["failures"])
+    required = list(required_components)
+    for entry in gate["reports"]:
+        report = entry["report"]
+        covered = report.get("covered_components")
+        covered_set = set(covered) if isinstance(covered, list) else set()
+        missing_components = [component for component in required if component not in covered_set]
+        if missing_components:
+            failures.append(
+                {
+                    "report_path": entry["path"],
+                    "reason": "covered_components_missing",
+                    "missing_components": missing_components,
+                }
+            )
+    return {
+        **gate,
+        "gate_passed": not failures,
+        "required_components": required,
         "failures": failures,
     }
 

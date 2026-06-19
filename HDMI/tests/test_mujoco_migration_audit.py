@@ -142,6 +142,21 @@ def _write_component_report(tmp_path: Path, *, gate_passed: bool = True) -> Path
     return report_path
 
 
+def _write_partial_component_report(tmp_path: Path) -> Path:
+    report_path = tmp_path / "partial_component_audit.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "component_gate_passed": True,
+                "covered_components": ["batched_env"],
+                "component_failures": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return report_path
+
+
 def test_migration_audit_passes_with_payloads_mapping_training_policy_and_playback(tmp_path, capsys):
     audit = _load_audit_module()
     manifest_path = _write_payload_manifest(tmp_path, present=True)
@@ -248,3 +263,32 @@ def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, 
     assert "policy_export" in failure_components
     assert "playback_parity" in failure_components
     assert "component_reports" in failure_components
+
+
+def test_migration_audit_fails_when_component_report_omits_required_components(tmp_path, capsys):
+    audit = _load_audit_module()
+    component_report_path = _write_partial_component_report(tmp_path)
+
+    exit_code = audit.main(
+        [
+            "--component-report",
+            str(component_report_path),
+            "--require-component-reports",
+        ]
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert report["migration_passed"] is False
+    assert report["component_reports"]["gate_passed"] is False
+    assert report["component_reports"]["failures"] == [
+        {
+            "report_path": str(component_report_path),
+            "reason": "covered_components_missing",
+            "missing_components": [
+                "object_contact",
+                "domain_randomization",
+                "reward_parity",
+            ],
+        }
+    ]
