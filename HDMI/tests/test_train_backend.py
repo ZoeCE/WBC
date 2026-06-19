@@ -395,13 +395,18 @@ def _run_train_script_smoke(tmp_path, task: str, run_name: str, extra_overrides:
     return result
 
 
-def _run_train_sequential_script_smoke(tmp_path, task: str, run_name: str):
+def _run_train_sequential_script_smoke(
+    tmp_path,
+    task: str,
+    run_name: str,
+    stages: str = "[ppo]",
+):
     run_dir = tmp_path / run_name
     command = [
         sys.executable,
         str(ROOT / "scripts/train_sequential.py"),
         "backend=mujoco",
-        "stages=[ppo]",
+        f"stages={stages}",
         f"task={task}",
         "task.num_envs=1",
         "task.max_episode_length=4",
@@ -509,3 +514,16 @@ def test_mujoco_train_sequential_script_runs_single_stage(tmp_path):
 
     assert result.returncode == 0, result.stdout[-4000:]
     assert "COMPLETED STAGE 1/1" in result.stdout
+
+
+def test_mujoco_train_sequential_script_handoffs_local_checkpoint_when_wandb_disabled(tmp_path):
+    result = _run_train_sequential_script_smoke(
+        tmp_path,
+        "G1/hdmi/push_box",
+        "mujoco-train-sequential-two-stage-smoke",
+        stages="[ppo,ppo]",
+    )
+
+    assert result.returncode == 0, result.stdout[-4000:]
+    assert "COMPLETED STAGE 2/2" in result.stdout
+    assert "Could not find run" not in result.stdout

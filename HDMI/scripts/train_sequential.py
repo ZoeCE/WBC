@@ -42,6 +42,12 @@ torch.backends.cudnn.benchmark = False
 CONFIG_PATH = os.path.join(FILE_PATH, "..", "cfg")
 
 
+def _stage_needs_local_checkpoint_handoff(cfg: DictConfig) -> bool:
+    wandb_cfg = cfg.get("wandb", {})
+    mode = wandb_cfg.get("mode", None) if hasattr(wandb_cfg, "get") else None
+    return str(mode).lower() in {"disabled", "offline", "dryrun"}
+
+
 def _configure_backend_and_app(cfg: DictConfig):
     backend = cfg.get("backend", aa.get_backend())
     aa.set_backend(backend)
@@ -58,7 +64,7 @@ def _configure_backend_and_app(cfg: DictConfig):
     return app_launcher.app
 
 
-def run_training_stage(cfg: DictConfig, return_queue: multiprocessing.Queue = None) -> str:
+def run_training_stage(cfg: DictConfig, return_queue: multiprocessing.Queue = None):
     OmegaConf.set_struct(cfg, False)
 
     print(f"is_distributed: {aa.is_distributed()}, local_rank: {aa.get_local_rank()}/{aa.get_world_size()}")
@@ -128,6 +134,7 @@ def run_training_stage(cfg: DictConfig, return_queue: multiprocessing.Queue = No
             run.log_artifact(artifact)
         run.save(ckpt_path, policy="now", base_path=run.dir)
         logging.info(f"Saved checkpoint to {str(ckpt_path)}")
+        return ckpt_path
 
     assert env.training
     def should_save(i):
@@ -210,19 +217,27 @@ def run_training_stage(cfg: DictConfig, return_queue: multiprocessing.Queue = No
             run.log(info)
 
     # 5. --- Finalization and Cleanup ---
+    checkpoint_final_path = None
     if aa.is_main_process():
-        save(policy, "checkpoint_final", artifact=True)
+        checkpoint_final_path = save(policy, "checkpoint_final", artifact=True)
 
     # Calculate the run path to return
     run_id = run.id
     project = run.project
     entity = run.entity
     run_path = f"{entity}/{project}/{run_id}"
+    stage_result = {
+        "run_path": run_path,
+        "checkpoint_path": checkpoint_final_path,
+    }
 
     # IMPORTANT: Put the result in the queue BEFORE exiting.
     if return_queue:
-        print(f"Child process sending run_path to parent: {run_path}")
-        return_queue.put(run_path)
+        print(
+            "Child process sending stage result to parent: "
+            f"run_path={run_path}, checkpoint_path={checkpoint_final_path}"
+        )
+        return_queue.put(stage_result)
 
     print("Finishing W&B run and preparing to exit process.")
     wandb.finish()
@@ -230,7 +245,7 @@ def run_training_stage(cfg: DictConfig, return_queue: multiprocessing.Queue = No
     if simulation_app is None:
         env.close()
         print(f"Child process for stage {cfg.algo.name} completed cleanly.")
-        return run_path
+        return stage_result
 
     # Due to an Isaac Sim bug, simulation_app.close() hangs.
     # We must use os._exit(0) to forcefully terminate this child process.
@@ -263,7 +278,7 @@ def main(cfg: DictConfig):
         print("  - None")
     print("="*80)
 
-    previous_run_path = None
+    previous_checkpoint_path = None
 
     # 2. --- Loop through each defined stage ---
     for i, stage_name in enumerate(cfg.stages):
@@ -274,14 +289,14 @@ def main(cfg: DictConfig):
         # 3. --- Dynamically compose the configuration for THIS stage ---
         stage_overrides = cli_overrides.copy()
         stage_overrides.append(f"algo={stage_name}")
-        if previous_run_path:
-            stage_overrides.append(f"checkpoint_path=run:{previous_run_path}")
-            print(f"Will load checkpoint from previous run: {previous_run_path}")
+        if previous_checkpoint_path:
+            stage_overrides.append(f"checkpoint_path={previous_checkpoint_path}")
+            print(f"Will load checkpoint from previous stage: {previous_checkpoint_path}")
 
         stage_cfg = compose(config_name="train", overrides=stage_overrides)
 
         # 4. --- Run the training stage in a separate process ---
-        # A queue is used for the child process to return the run_path.
+        # A queue is used for the child process to return the stage result.
         return_queue = multiprocessing.Queue(1)
 
         OmegaConf.resolve(stage_cfg)
@@ -306,12 +321,29 @@ def main(cfg: DictConfig):
             raise RuntimeError(message)
         # 5. --- Retrieve the result from the queue and update state ---
         try:
-            current_run_path = return_queue.get(timeout=10)
-            previous_run_path = current_run_path
+            stage_result = return_queue.get(timeout=10)
+            if isinstance(stage_result, dict):
+                current_run_path = stage_result.get("run_path")
+                current_checkpoint_path = stage_result.get("checkpoint_path")
+            else:
+                current_run_path = stage_result
+                current_checkpoint_path = None
+            if not current_run_path:
+                raise ValueError(f"Child process for stage {stage_name} did not report a run_path.")
+            if _stage_needs_local_checkpoint_handoff(stage_cfg):
+                if not current_checkpoint_path:
+                    raise ValueError(
+                        f"Child process for stage {stage_name} did not report a local checkpoint_path."
+                    )
+                previous_checkpoint_path = current_checkpoint_path
+            else:
+                previous_checkpoint_path = f"run:{current_run_path}"
             print(f"✅ COMPLETED STAGE {i+1}/{len(cfg.stages)}: {stage_name}")
             print(f"   Run Path: {current_run_path}")
+            if current_checkpoint_path:
+                print(f"   Local Checkpoint: {current_checkpoint_path}")
         except Exception as e:
-            message = f"Could not retrieve run_path from child process for stage {stage_name}. Error: {e}"
+            message = f"Could not retrieve stage result from child process for stage {stage_name}. Error: {e}"
             print(f"ERROR: {message}")
             raise RuntimeError(message) from e
 
