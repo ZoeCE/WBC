@@ -293,6 +293,80 @@ def test_mujoco_playback_parity_cli_prints_json_summary(tmp_path, capsys):
     assert summary["reward_mean"] > 0.99
 
 
+def test_mujoco_playback_parity_cli_passes_metric_threshold_gate(tmp_path, capsys):
+    object_body_name, object_joint_name = _write_motion_dir(tmp_path)
+    reward_cfg_path = tmp_path / "reward.json"
+    reward_cfg_path.write_text(json.dumps({"loco": {"survival": {"weight": 1.0}}}))
+    script = _load_cli_module()
+
+    exit_code = script.main(
+        [
+            "--motion-dir",
+            str(tmp_path),
+            "--object-name",
+            "door",
+            "--object-body-name",
+            object_body_name,
+            "--object-joint-name",
+            object_joint_name,
+            "--reward-config-json",
+            str(reward_cfg_path),
+            "--steps",
+            "0,1",
+            "--max-q-l2",
+            "1e-5",
+            "--max-body-pos-l2",
+            "10.0",
+            "--min-reward-mean",
+            "0.99",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["parity_passed"] is True
+    assert summary["threshold_failures"] == []
+    assert summary["thresholds"] == {
+        "max_q_l2": 1e-5,
+        "max_body_pos_l2": 10.0,
+        "min_reward_mean": 0.99,
+    }
+
+
+def test_mujoco_playback_parity_cli_fails_metric_threshold_gate(tmp_path, capsys):
+    object_body_name, object_joint_name = _write_motion_dir(tmp_path)
+    script = _load_cli_module()
+
+    exit_code = script.main(
+        [
+            "--motion-dir",
+            str(tmp_path),
+            "--object-name",
+            "door",
+            "--object-body-name",
+            object_body_name,
+            "--object-joint-name",
+            object_joint_name,
+            "--steps",
+            "0,1",
+            "--max-q-l2",
+            "-1.0",
+        ]
+    )
+
+    assert exit_code == 1
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["parity_passed"] is False
+    assert summary["threshold_failures"] == [
+        {
+            "metric": "q_l2_max",
+            "limit": -1.0,
+            "actual": summary["q_l2_max"],
+            "comparison": "<=",
+        }
+    ]
+
+
 def test_mujoco_playback_parity_cli_loads_task_yaml_reward(tmp_path, capsys):
     object_body_name, object_joint_name = _write_motion_dir(tmp_path)
     cfg_dir = tmp_path / "cfg/task"

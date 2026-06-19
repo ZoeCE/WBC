@@ -297,6 +297,7 @@ def _trace_tensor_mapping(value: Mapping[str, torch.Tensor] | None) -> dict[str,
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    exit_code = 0
     with contextlib.redirect_stdout(sys.stderr):
         task_cfg = _load_task_config_from_args(args)
         playback_inputs = _resolve_playback_inputs(args, task_cfg)
@@ -323,8 +324,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if mapping_report is not None:
             summary.update(_task_mapping_summary(mapping_report))
+        exit_code = _apply_threshold_gate(summary, args)
     print(json.dumps(summary, sort_keys=True))
-    return 0
+    return exit_code
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -357,7 +359,67 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=None,
         help="Optional path to write per-step MuJoCo parity trace tensors.",
     )
+    parser.add_argument(
+        "--max-q-l2",
+        type=float,
+        default=None,
+        help="Fail with exit code 1 when q_l2_max exceeds this threshold.",
+    )
+    parser.add_argument(
+        "--max-body-pos-l2",
+        type=float,
+        default=None,
+        help="Fail with exit code 1 when body_pos_l2_max exceeds this threshold.",
+    )
+    parser.add_argument(
+        "--min-reward-mean",
+        type=float,
+        default=None,
+        help="Fail with exit code 1 when reward_mean is absent or below this threshold.",
+    )
     return parser.parse_args(argv)
+
+
+def _apply_threshold_gate(summary: dict[str, Any], args: argparse.Namespace) -> int:
+    checks = [
+        ("max_q_l2", args.max_q_l2, "q_l2_max", "<="),
+        ("max_body_pos_l2", args.max_body_pos_l2, "body_pos_l2_max", "<="),
+        ("min_reward_mean", args.min_reward_mean, "reward_mean", ">="),
+    ]
+    thresholds = {name: float(limit) for name, limit, _metric, _comparison in checks if limit is not None}
+    if not thresholds:
+        return 0
+
+    failures: list[dict[str, Any]] = []
+    for threshold_name, limit, metric_name, comparison in checks:
+        if limit is None:
+            continue
+        actual = summary.get(metric_name)
+        if not _threshold_passes(actual, float(limit), comparison):
+            failures.append(
+                {
+                    "metric": metric_name,
+                    "limit": float(limit),
+                    "actual": actual,
+                    "comparison": comparison,
+                }
+            )
+
+    summary["thresholds"] = thresholds
+    summary["threshold_failures"] = failures
+    summary["parity_passed"] = not failures
+    return 1 if failures else 0
+
+
+def _threshold_passes(actual: Any, limit: float, comparison: str) -> bool:
+    if actual is None:
+        return False
+    actual_value = float(actual)
+    if comparison == "<=":
+        return actual_value <= limit
+    if comparison == ">=":
+        return actual_value >= limit
+    raise ValueError(f"Unsupported threshold comparison {comparison!r}.")
 
 
 def _parse_steps(raw_steps: str | None) -> list[int] | None:
