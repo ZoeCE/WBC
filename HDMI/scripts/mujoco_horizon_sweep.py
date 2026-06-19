@@ -7,6 +7,30 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
+_THRESHOLD_CHECKS = (
+    ("max_q_l2", "q_l2_max", "playback", "q_l2", "max", "<="),
+    ("max_body_pos_l2", "body_pos_l2_max", "playback", "body_pos_l2", "max", "<="),
+    ("min_reward_mean", "reward_mean", "playback", "reward", "mean", ">="),
+    ("max_policy_rollout_q_l2", "policy_rollout_q_l2_max", "policy_rollout", "q_l2", "max", "<="),
+    (
+        "max_policy_rollout_body_pos_l2",
+        "policy_rollout_body_pos_l2_max",
+        "policy_rollout",
+        "body_pos_l2",
+        "max",
+        "<=",
+    ),
+    (
+        "min_policy_rollout_reward_mean",
+        "policy_rollout_reward_mean",
+        "policy_rollout",
+        "reward",
+        "mean",
+        ">=",
+    ),
+)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     report = build_horizon_sweep_report(
@@ -57,6 +81,7 @@ def build_horizon_sweep_report(
         "thresholds": threshold_report,
         "horizons": horizon_reports,
         "first_failure": first_failure,
+        "first_crossings": _first_crossings(trace, threshold_report),
         "gate_passed": first_failure is None,
     }
 
@@ -78,16 +103,8 @@ def _horizon_metrics(trace: dict[str, Any], step_count: int) -> dict[str, float 
 
 
 def _threshold_failures(metrics: dict[str, float | None], thresholds: dict[str, float]) -> list[dict[str, Any]]:
-    checks = [
-        ("max_q_l2", "q_l2_max", "<="),
-        ("max_body_pos_l2", "body_pos_l2_max", "<="),
-        ("min_reward_mean", "reward_mean", ">="),
-        ("max_policy_rollout_q_l2", "policy_rollout_q_l2_max", "<="),
-        ("max_policy_rollout_body_pos_l2", "policy_rollout_body_pos_l2_max", "<="),
-        ("min_policy_rollout_reward_mean", "policy_rollout_reward_mean", ">="),
-    ]
     failures: list[dict[str, Any]] = []
-    for threshold_name, metric_name, comparison in checks:
+    for threshold_name, metric_name, _section, _key, _reducer, comparison in _THRESHOLD_CHECKS:
         if threshold_name not in thresholds:
             continue
         limit = float(thresholds[threshold_name])
@@ -102,6 +119,42 @@ def _threshold_failures(metrics: dict[str, float | None], thresholds: dict[str, 
                 }
             )
     return failures
+
+
+def _first_crossings(trace: dict[str, Any], thresholds: dict[str, float]) -> list[dict[str, Any]]:
+    crossings: list[dict[str, Any]] = []
+    for threshold_name, metric_name, section, key, reducer, comparison in _THRESHOLD_CHECKS:
+        if threshold_name not in thresholds:
+            continue
+        limit = float(thresholds[threshold_name])
+        step_values = _tensor_step_values(trace, section, key, reducer)
+        if not step_values:
+            crossings.append(
+                {
+                    "metric": metric_name,
+                    "step_index": None,
+                    "step": None,
+                    "actual": None,
+                    "limit": limit,
+                    "comparison": comparison,
+                }
+            )
+            continue
+        for step_index, actual in enumerate(step_values):
+            if _threshold_passes(actual, limit, comparison):
+                continue
+            crossings.append(
+                {
+                    "metric": metric_name,
+                    "step_index": step_index,
+                    "step": step_index + 1,
+                    "actual": actual,
+                    "limit": limit,
+                    "comparison": comparison,
+                }
+            )
+            break
+    return crossings
 
 
 def _threshold_passes(actual: float | None, limit: float, comparison: str) -> bool:
@@ -124,6 +177,28 @@ def _tensor_prefix_max(trace: dict[str, Any], section: str, key: str, step_count
 def _tensor_prefix_mean(trace: dict[str, Any], section: str, key: str, step_count: int) -> float | None:
     values = _tensor_prefix_values(trace, section, key, step_count)
     return sum(values) / len(values) if values else None
+
+
+def _tensor_step_values(trace: dict[str, Any], section: str, key: str, reducer: str) -> list[float | None]:
+    tensor = (trace.get(section) or {}).get(key)
+    if tensor is None:
+        return []
+    values = tensor.get("values")
+    if values is None:
+        return []
+
+    step_values: list[float | None] = []
+    for step in values:
+        flat = [float(value) for value in _flatten(step)]
+        if not flat:
+            step_values.append(None)
+        elif reducer == "max":
+            step_values.append(max(flat))
+        elif reducer == "mean":
+            step_values.append(sum(flat) / len(flat))
+        else:
+            raise ValueError(f"Unsupported reducer {reducer!r}.")
+    return step_values
 
 
 def _tensor_prefix_values(trace: dict[str, Any], section: str, key: str, step_count: int) -> list[float]:

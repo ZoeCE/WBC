@@ -59,5 +59,6 @@ PYTHONPATH=. python scripts/mujoco_migration_audit.py --require-payloads --task-
 
 # Diagnose closed-loop policy rollout drift over longer horizons from one trace
 PYTHONPATH=. python scripts/mujoco_playback_parity.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --policy-path scripts/exports/G1PushBox/policy-<run>-<checkpoint>.pt --policy-rollout --trace-json /tmp/wbc_push_box_rollout_trace.json > /tmp/wbc_push_box_rollout_summary.json
+# The sweep report includes first_crossings with the first per-step threshold violation for each metric.
 PYTHONPATH=. python scripts/mujoco_horizon_sweep.py /tmp/wbc_push_box_rollout_trace.json --horizon 2,8,32,128,all --max-policy-rollout-q-l2 1.0 --max-policy-rollout-body-pos-l2 0.2 --min-policy-rollout-reward-mean 0.0
 ```

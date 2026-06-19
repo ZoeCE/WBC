@@ -86,6 +86,32 @@ def test_horizon_sweep_reports_first_policy_rollout_failure(tmp_path, capsys):
         "policy_rollout_body_pos_l2_max",
         "policy_rollout_reward_mean",
     }
+    assert report["first_crossings"] == [
+        {
+            "metric": "policy_rollout_q_l2_max",
+            "step_index": 2,
+            "step": 3,
+            "actual": 1.2,
+            "limit": 1.0,
+            "comparison": "<=",
+        },
+        {
+            "metric": "policy_rollout_body_pos_l2_max",
+            "step_index": 2,
+            "step": 3,
+            "actual": 0.3,
+            "limit": 0.2,
+            "comparison": "<=",
+        },
+        {
+            "metric": "policy_rollout_reward_mean",
+            "step_index": 2,
+            "step": 3,
+            "actual": 0.2,
+            "limit": 0.75,
+            "comparison": ">=",
+        },
+    ]
 
 
 def test_horizon_sweep_passes_all_horizon_alias(tmp_path, capsys):
@@ -114,3 +140,4 @@ def test_horizon_sweep_passes_all_horizon_alias(tmp_path, capsys):
     assert report["horizons"][0]["q_l2_max"] == 0.0
     assert report["horizons"][0]["body_pos_l2_max"] == 0.03
     assert report["horizons"][0]["reward_mean"] == 1.0
+    assert report["first_crossings"] == []
