@@ -105,9 +105,31 @@ def _write_playback_parity_report(tmp_path: Path, *, parity_passed: bool = True)
                 "q_l2_max": 0.0,
                 "body_pos_l2_max": 0.01,
                 "reward_mean": 1.0,
+                "thresholds": {
+                    "max_q_l2": 0.01,
+                    "max_body_pos_l2": 0.02,
+                    "min_reward_mean": 0.5,
+                },
                 "policy_rollout_q_l2_max": 0.2 if parity_passed else 2.0,
                 "policy_rollout_body_pos_l2_max": 0.05,
                 "policy_rollout_reward_mean": 1.1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return report_path
+
+
+def _write_playback_parity_report_without_threshold_evidence(tmp_path: Path) -> Path:
+    report_path = tmp_path / "playback_parity_without_thresholds.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "parity_passed": True,
+                "threshold_failures": [],
+                "q_l2_max": 0.0,
+                "body_pos_l2_max": 0.01,
+                "reward_mean": 1.0,
             }
         ),
         encoding="utf-8",
@@ -214,6 +236,31 @@ def test_migration_audit_passes_with_payloads_mapping_training_policy_and_playba
     assert report["playback_parity"]["num_reports"] == 1
     assert report["component_reports"]["gate_passed"] is True
     assert report["component_reports"]["num_reports"] == 1
+
+
+def test_migration_audit_rejects_playback_report_without_threshold_evidence(tmp_path, capsys):
+    audit = _load_audit_module()
+    playback_report_path = _write_playback_parity_report_without_threshold_evidence(tmp_path)
+
+    exit_code = audit.main(
+        [
+            "--playback-parity-report",
+            str(playback_report_path),
+            "--require-playback-parity",
+        ]
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert report["migration_passed"] is False
+    assert report["playback_parity"]["gate_passed"] is False
+    assert report["playback_parity"]["failures"] == [
+        {
+            "report_path": str(playback_report_path),
+            "reason": "missing_playback_thresholds",
+            "missing_thresholds": ["max_q_l2", "max_body_pos_l2", "min_reward_mean"],
+        }
+    ]
 
 
 def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, capsys):

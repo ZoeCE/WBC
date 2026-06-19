@@ -29,6 +29,8 @@ from mujoco_train_summary_gate import build_gate_report  # noqa: E402
 DEFAULT_PAYLOAD_MANIFEST = HDMI_ROOT / "mujoco_external_payloads.yaml"
 DEFAULT_TASK_DIR = HDMI_ROOT / "cfg/task/G1/hdmi"
 REQUIRED_COMPONENT_REPORT_COVERAGE = tuple(COMPONENT_SPECS)
+REQUIRED_PLAYBACK_THRESHOLD_KEYS = ("max_q_l2", "max_body_pos_l2", "min_reward_mean")
+REQUIRED_PLAYBACK_METRIC_KEYS = ("q_l2_max", "body_pos_l2_max", "reward_mean")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -168,9 +170,8 @@ def build_migration_audit(
         )
 
     playback_parity_required = require_playback_parity or bool(playback_parity_reports)
-    playback_parity = _build_json_report_gate(
+    playback_parity = _build_playback_parity_report_gate(
         report_paths=playback_parity_reports,
-        pass_key="parity_passed",
         require_reports=require_playback_parity,
     )
     if playback_parity_required and not playback_parity["gate_passed"]:
@@ -372,6 +373,53 @@ def _build_json_report_gate(
         "num_reports": len(reports),
         "report_paths": [str(path) for path in report_paths],
         "reports": reports,
+        "failures": failures,
+    }
+
+
+def _build_playback_parity_report_gate(
+    *,
+    report_paths: Sequence[Path],
+    require_reports: bool,
+) -> dict[str, Any]:
+    gate = _build_json_report_gate(
+        report_paths=report_paths,
+        pass_key="parity_passed",
+        require_reports=require_reports,
+    )
+    failures = list(gate["failures"])
+    required_thresholds = list(REQUIRED_PLAYBACK_THRESHOLD_KEYS)
+    required_metrics = list(REQUIRED_PLAYBACK_METRIC_KEYS)
+
+    for entry in gate["reports"]:
+        report = entry["report"]
+        missing_metrics = [key for key in required_metrics if report.get(key) is None]
+        if missing_metrics:
+            failures.append(
+                {
+                    "report_path": entry["path"],
+                    "reason": "missing_playback_metrics",
+                    "missing_metrics": missing_metrics,
+                }
+            )
+
+        thresholds = report.get("thresholds")
+        threshold_keys = set(thresholds) if isinstance(thresholds, dict) else set()
+        missing_thresholds = [key for key in required_thresholds if key not in threshold_keys]
+        if missing_thresholds:
+            failures.append(
+                {
+                    "report_path": entry["path"],
+                    "reason": "missing_playback_thresholds",
+                    "missing_thresholds": missing_thresholds,
+                }
+            )
+
+    return {
+        **gate,
+        "gate_passed": not failures,
+        "required_metrics": required_metrics,
+        "required_thresholds": required_thresholds,
         "failures": failures,
     }
 
