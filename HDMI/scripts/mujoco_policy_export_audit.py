@@ -426,8 +426,10 @@ def _export_command(task_override: str, checkpoint_path: str | None) -> list[str
         f"checkpoint_path={checkpoint}",
         "export_policy=true",
         "export_policy_exit=true",
+        "export_policy_benchmark_iters=0",
+        "export_onnx_policy=false",
         "headless=true",
-        "backend=isaac",
+        "backend=mujoco",
     ]
 
 

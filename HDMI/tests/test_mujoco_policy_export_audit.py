@@ -91,8 +91,10 @@ def test_policy_export_audit_require_policy_fails_when_export_is_missing(tmp_pat
         "checkpoint_path=run:entity/project/runid",
         "export_policy=true",
         "export_policy_exit=true",
+        "export_policy_benchmark_iters=0",
+        "export_onnx_policy=false",
         "headless=true",
-        "backend=isaac",
+        "backend=mujoco",
     ]
 
 

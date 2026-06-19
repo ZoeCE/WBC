@@ -42,7 +42,7 @@ python scripts/train.py algo=ppo_roa_finetune task=G1/hdmi/move_suitcase checkpo
 python scripts/play.py algo=ppo_roa_finetune task=G1/hdmi/move_suitcase checkpoint_path=run:<student-wandb_run_path>
 
 # Export policy for MuJoCo parity
-python scripts/play.py algo=ppo_roa_finetune task=G1/hdmi/push_box checkpoint_path=run:<student-wandb_run_path> export_policy=true export_policy_exit=true export_policy_benchmark_iters=0 headless=true backend=isaac
+python scripts/play.py algo=ppo_roa_finetune task=G1/hdmi/push_box checkpoint_path=<local_or_run_checkpoint> export_policy=true export_policy_exit=true export_policy_benchmark_iters=0 export_onnx_policy=false headless=true backend=mujoco
 
 # Gate the exported policy before MuJoCo playback/rollout parity
 PYTHONPATH=. python scripts/mujoco_policy_export_audit.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --checkpoint-path <local_checkpoint_final.pt> --require-policy --require-reference-observation --require-checkpoint-algo ppo_roa --min-checkpoint-total-frames <min_trained_frames>
