@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Sequence
 
+import torch
 import yaml
+from omegaconf import OmegaConf
 
 
 HDMI_ROOT = Path(__file__).resolve().parents[1]
@@ -39,9 +42,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         checkpoint_path=args.checkpoint_path,
         robot_name=args.robot_name,
         require_reference_observation=args.require_reference_observation,
+        require_checkpoint_algo=args.require_checkpoint_algo,
+        min_checkpoint_total_frames=args.min_checkpoint_total_frames,
     )
     print(json.dumps(report, sort_keys=True))
-    if (args.require_policy or args.require_reference_observation) and not report["gate_passed"]:
+    gate_requested = (
+        args.require_policy
+        or args.require_reference_observation
+        or args.require_checkpoint_algo is not None
+        or args.min_checkpoint_total_frames is not None
+    )
+    if gate_requested and not report["gate_passed"]:
         return 1
     return 0
 
@@ -54,6 +65,8 @@ def build_policy_export_audit(
     checkpoint_path: str | None = None,
     robot_name: str = "g1_29dof",
     require_reference_observation: bool = False,
+    require_checkpoint_algo: str | None = None,
+    min_checkpoint_total_frames: int | None = None,
 ) -> dict[str, Any]:
     task_path = Path(task_yaml)
     task_cfg = _load_yaml_mapping(task_path)
@@ -104,6 +117,8 @@ def build_policy_export_audit(
         "policy_has_reference_observation": None,
         "policy_reference_observation_keys": [],
         "require_reference_observation": bool(require_reference_observation),
+        "require_checkpoint_algo": require_checkpoint_algo,
+        "min_checkpoint_total_frames": min_checkpoint_total_frames,
         "num_policy_body_mappings": None,
         "num_policy_joint_mappings": None,
     }
@@ -115,6 +130,8 @@ def build_policy_export_audit(
     report["missing_requirements"] = _missing_requirements(
         report,
         require_reference_observation=require_reference_observation,
+        require_checkpoint_algo=require_checkpoint_algo,
+        min_checkpoint_total_frames=min_checkpoint_total_frames,
     )
     report["gate_passed"] = not report["missing_requirements"]
     return report
@@ -160,6 +177,17 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
             "Return exit code 1 unless the exported actor observation config contains a reference/command "
             "observation needed for closed-loop motion tracking parity."
         ),
+    )
+    parser.add_argument(
+        "--require-checkpoint-algo",
+        default=None,
+        help="Return exit code 1 unless a local checkpoint cfg has this algo.name.",
+    )
+    parser.add_argument(
+        "--min-checkpoint-total-frames",
+        type=int,
+        default=None,
+        help="Return exit code 1 unless a local checkpoint cfg.total_frames is at least this value.",
     )
     return parser.parse_args(argv)
 
@@ -216,6 +244,8 @@ def _missing_requirements(
     report: dict[str, Any],
     *,
     require_reference_observation: bool,
+    require_checkpoint_algo: str | None,
+    min_checkpoint_total_frames: int | None,
 ) -> list[str]:
     missing: list[str] = []
     if not report["policy_exists"]:
@@ -228,6 +258,13 @@ def _missing_requirements(
         missing.append("policy_task_motion_mjcf_mapping")
     if require_reference_observation and report["policy_has_reference_observation"] is not True:
         missing.append("policy_reference_observation")
+    if require_checkpoint_algo is not None and report.get("checkpoint_algo_name") != require_checkpoint_algo:
+        missing.append("checkpoint_algo")
+    if min_checkpoint_total_frames is not None and not _at_least(
+        report.get("checkpoint_total_frames"),
+        float(min_checkpoint_total_frames),
+    ):
+        missing.append("checkpoint_total_frames")
     return missing
 
 
@@ -287,11 +324,97 @@ def _default_policy_config_path(policy_path: Path | None) -> Path | None:
 
 
 def _checkpoint_summary(checkpoint_path: str | None) -> dict[str, Any]:
+    summary = _checkpoint_provenance_defaults()
     if checkpoint_path is None:
-        return {"checkpoint_kind": "none", "checkpoint_exists": None}
+        summary.update({"checkpoint_kind": "none", "checkpoint_exists": None})
+        return summary
     if checkpoint_path.startswith("run:"):
-        return {"checkpoint_kind": "wandb_run", "checkpoint_exists": None}
-    return {"checkpoint_kind": "local", "checkpoint_exists": Path(checkpoint_path).is_file()}
+        summary.update({"checkpoint_kind": "wandb_run", "checkpoint_exists": None})
+        return summary
+
+    path = Path(checkpoint_path)
+    summary.update({"checkpoint_kind": "local", "checkpoint_exists": path.is_file()})
+    if path.is_file():
+        summary.update(_local_checkpoint_provenance(path))
+    return summary
+
+
+def _checkpoint_provenance_defaults() -> dict[str, Any]:
+    return {
+        "checkpoint_cfg_loadable": None,
+        "checkpoint_cfg_load_error": None,
+        "checkpoint_algo_name": None,
+        "checkpoint_algo_target": None,
+        "checkpoint_backend": None,
+        "checkpoint_total_frames": None,
+        "checkpoint_task_name": None,
+        "checkpoint_num_envs": None,
+        "checkpoint_source_checkpoint_path": None,
+        "checkpoint_wandb_id": None,
+        "checkpoint_wandb_name": None,
+    }
+
+
+def _local_checkpoint_provenance(path: Path) -> dict[str, Any]:
+    try:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception as exc:  # pragma: no cover - loader errors depend on checkpoint contents.
+        return {
+            "checkpoint_cfg_loadable": False,
+            "checkpoint_cfg_load_error": f"{type(exc).__name__}: {exc}",
+        }
+
+    checkpoint_mapping = _as_mapping(checkpoint)
+    cfg = _as_mapping(checkpoint_mapping.get("cfg"))
+    if not cfg:
+        return {
+            "checkpoint_cfg_loadable": False,
+            "checkpoint_cfg_load_error": "checkpoint cfg missing or not a mapping",
+        }
+
+    algo = _as_mapping(cfg.get("algo"))
+    task = _as_mapping(cfg.get("task"))
+    wandb_info = _as_mapping(checkpoint_mapping.get("wandb"))
+    return {
+        "checkpoint_cfg_loadable": True,
+        "checkpoint_cfg_load_error": None,
+        "checkpoint_algo_name": _optional_str(algo.get("name")),
+        "checkpoint_algo_target": _optional_str(algo.get("_target_")),
+        "checkpoint_backend": _optional_str(cfg.get("backend")),
+        "checkpoint_total_frames": _optional_int(cfg.get("total_frames")),
+        "checkpoint_task_name": _optional_str(task.get("name")),
+        "checkpoint_num_envs": _optional_int(task.get("num_envs")),
+        "checkpoint_source_checkpoint_path": _optional_str(cfg.get("checkpoint_path")),
+        "checkpoint_wandb_id": _optional_str(wandb_info.get("id")),
+        "checkpoint_wandb_name": _optional_str(wandb_info.get("name")),
+    }
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    if OmegaConf.is_config(value):
+        value = OmegaConf.to_container(value, resolve=True)
+    return value if isinstance(value, Mapping) else {}
+
+
+def _optional_str(value: Any) -> str | None:
+    return None if value is None else str(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _at_least(actual: Any, limit: float) -> bool:
+    try:
+        actual_value = float(actual)
+    except (TypeError, ValueError):
+        return False
+    return actual_value >= limit
 
 
 def _export_command(task_override: str, checkpoint_path: str | None) -> list[str]:

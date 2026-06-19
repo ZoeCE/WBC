@@ -166,3 +166,100 @@ def test_policy_export_audit_passes_when_reference_observation_is_present(tmp_pa
     assert summary["missing_requirements"] == []
     assert summary["policy_has_reference_observation"] is True
     assert summary["policy_reference_observation_keys"] == ["ref_motion_phase"]
+
+
+def test_policy_export_audit_reports_local_checkpoint_provenance(tmp_path, capsys):
+    module = _load_audit_cli_module()
+    task_path = ROOT / "cfg/task/G1/hdmi/push_box.yaml"
+    policy_path = _write_policy_export(tmp_path / "exports/G1PushBox", reference_observation=True)
+    checkpoint_path = tmp_path / "checkpoint_final.pt"
+    torch.save(
+        {
+            "cfg": {
+                "backend": "mujoco",
+                "total_frames": 8192,
+                "checkpoint_path": "run:entity/hdmi/teacher",
+                "algo": {
+                    "name": "ppo_roa",
+                    "_target_": "active_adaptation.learning.ppo.ppo_roa.PPOROA",
+                },
+                "task": {"name": "G1PushBox", "num_envs": 64},
+            },
+            "wandb": {"id": "trained1", "name": "trained-run"},
+        },
+        checkpoint_path,
+    )
+
+    exit_code = module.main(
+        [
+            "--task-yaml",
+            str(task_path),
+            "--policy-path",
+            str(policy_path),
+            "--checkpoint-path",
+            str(checkpoint_path),
+            "--require-policy",
+            "--require-reference-observation",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert summary["gate_passed"] is True
+    assert summary["checkpoint_kind"] == "local"
+    assert summary["checkpoint_exists"] is True
+    assert summary["checkpoint_cfg_loadable"] is True
+    assert summary["checkpoint_algo_name"] == "ppo_roa"
+    assert summary["checkpoint_algo_target"] == "active_adaptation.learning.ppo.ppo_roa.PPOROA"
+    assert summary["checkpoint_backend"] == "mujoco"
+    assert summary["checkpoint_total_frames"] == 8192
+    assert summary["checkpoint_task_name"] == "G1PushBox"
+    assert summary["checkpoint_num_envs"] == 64
+    assert summary["checkpoint_source_checkpoint_path"] == "run:entity/hdmi/teacher"
+    assert summary["checkpoint_wandb_id"] == "trained1"
+
+
+def test_policy_export_audit_can_gate_checkpoint_provenance(tmp_path, capsys):
+    module = _load_audit_cli_module()
+    task_path = ROOT / "cfg/task/G1/hdmi/push_box.yaml"
+    policy_path = _write_policy_export(tmp_path / "exports/G1PushBox", reference_observation=True)
+    checkpoint_path = tmp_path / "checkpoint_final.pt"
+    torch.save(
+        {
+            "cfg": {
+                "backend": "mujoco",
+                "total_frames": 2,
+                "algo": {"name": "ppo"},
+                "task": {"name": "G1PushBox"},
+            },
+            "wandb": {"id": "smoke2"},
+        },
+        checkpoint_path,
+    )
+
+    exit_code = module.main(
+        [
+            "--task-yaml",
+            str(task_path),
+            "--policy-path",
+            str(policy_path),
+            "--checkpoint-path",
+            str(checkpoint_path),
+            "--require-policy",
+            "--require-reference-observation",
+            "--require-checkpoint-algo",
+            "ppo_roa",
+            "--min-checkpoint-total-frames",
+            "1024",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert summary["gate_passed"] is False
+    assert summary["checkpoint_algo_name"] == "ppo"
+    assert summary["checkpoint_total_frames"] == 2
+    assert summary["missing_requirements"] == [
+        "checkpoint_algo",
+        "checkpoint_total_frames",
+    ]

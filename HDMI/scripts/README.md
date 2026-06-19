@@ -45,7 +45,7 @@ python scripts/play.py algo=ppo_roa_finetune task=G1/hdmi/move_suitcase checkpoi
 python scripts/play.py algo=ppo_roa_finetune task=G1/hdmi/push_box checkpoint_path=run:<student-wandb_run_path> export_policy=true export_policy_exit=true export_policy_benchmark_iters=0 headless=true backend=isaac
 
 # Gate the exported policy before MuJoCo playback/rollout parity
-PYTHONPATH=. python scripts/mujoco_policy_export_audit.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --checkpoint-path run:<student-wandb_run_path> --require-policy --require-reference-observation
+PYTHONPATH=. python scripts/mujoco_policy_export_audit.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --checkpoint-path <local_checkpoint_final.pt> --require-policy --require-reference-observation --require-checkpoint-algo ppo_roa --min-checkpoint-total-frames <min_trained_frames>
 PYTHONPATH=. python scripts/mujoco_playback_parity.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --policy-path scripts/exports/G1PushBox/policy-<run>-<checkpoint>.pt --policy-rollout --require-reference-observation --steps 0,1 --max-q-l2 1e-5 --max-body-pos-l2 0.05 --max-policy-rollout-q-l2 1.0 --max-policy-rollout-body-pos-l2 0.2 --min-policy-rollout-reward-mean 0.0
 
 # Gate a MuJoCo PPO training smoke or longer run without W&B
@@ -54,7 +54,7 @@ PYTHONPATH=. python scripts/mujoco_train_summary_gate.py /tmp/wbc_mujoco_summary
 
 # Aggregate MuJoCo migration evidence across payloads, task mapping, components, training, and parity
 PYTHONPATH=. python scripts/mujoco_component_audit.py > /tmp/wbc_component_audit.json
-PYTHONPATH=. python scripts/mujoco_policy_export_audit.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --policy-path scripts/exports/G1PushBox/policy-<run>-<checkpoint>.pt --require-policy --require-reference-observation > /tmp/wbc_policy_audit.json
+PYTHONPATH=. python scripts/mujoco_policy_export_audit.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --policy-path scripts/exports/G1PushBox/policy-<run>-<checkpoint>.pt --checkpoint-path <local_checkpoint_final.pt> --require-policy --require-reference-observation --require-checkpoint-algo ppo_roa --min-checkpoint-total-frames <min_trained_frames> > /tmp/wbc_policy_audit.json
 PYTHONPATH=. python scripts/mujoco_playback_parity.py --task-yaml cfg/task/G1/hdmi/push_box.yaml --policy-path scripts/exports/G1PushBox/policy-<run>-<checkpoint>.pt --policy-rollout --require-reference-observation --steps 0,1 --max-q-l2 1e-5 --max-body-pos-l2 0.05 --max-policy-rollout-q-l2 1.0 --max-policy-rollout-body-pos-l2 0.2 --min-policy-rollout-reward-mean 0.0 > /tmp/wbc_playback_parity.json
 PYTHONPATH=. python scripts/mujoco_migration_audit.py --require-payloads --task-dir cfg/task/G1/hdmi --require-task-mappings --min-task-mappings 1 --component-report /tmp/wbc_component_audit.json --require-component-reports --training-summary /tmp/wbc_mujoco_summary_gate.json --require-training-summaries --min-training-summaries 1 --min-training-env-frames 128 --min-training-eval-metric eval/object_tracking/return 0.05 --max-training-eval-metric performance/inference_time 0.05 --policy-export-report /tmp/wbc_policy_audit.json --require-policy-export --playback-parity-report /tmp/wbc_playback_parity.json --require-playback-parity
 
