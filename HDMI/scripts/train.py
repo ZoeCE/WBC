@@ -9,6 +9,8 @@ import os
 import time
 import sys
 import datetime
+import json
+import math
 
 from omegaconf import OmegaConf, DictConfig
 from collections import OrderedDict
@@ -51,6 +53,64 @@ def _configure_backend_and_app(cfg: DictConfig):
         device=f"cuda:{aa.get_local_rank()}",
     )
     return app_launcher.app
+
+
+def _finite_scalar_dict(values):
+    scalars = OrderedDict()
+    non_finite = []
+    for key, value in values.items():
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                continue
+            value = value.detach().cpu().item()
+        elif isinstance(value, np.generic):
+            value = value.item()
+
+        if isinstance(value, bool):
+            scalars[str(key)] = value
+        elif isinstance(value, int):
+            scalars[str(key)] = int(value)
+        elif isinstance(value, float):
+            if math.isfinite(value):
+                scalars[str(key)] = float(value)
+            else:
+                non_finite.append(str(key))
+    return scalars, non_finite
+
+
+def _write_train_summary(cfg, env, run, env_frames, total_frames, total_iters, checkpoint_final, train_info, eval_info):
+    summary_path = cfg.get("train_summary_path", None)
+    if not summary_path:
+        return
+
+    train_scalars, train_non_finite = _finite_scalar_dict(train_info)
+    eval_scalars, eval_non_finite = _finite_scalar_dict(eval_info)
+    summary = OrderedDict(
+        backend=cfg.get("backend", aa.get_backend()),
+        task=OmegaConf.select(cfg, "task.name"),
+        run_dir=os.path.abspath(run.dir),
+        checkpoint_final=os.path.abspath(checkpoint_final),
+        num_envs=int(env.num_envs),
+        train_every=int(cfg.algo.train_every),
+        total_frames=int(total_frames),
+        total_iters=int(total_iters),
+        env_frames=int(env_frames),
+        train=train_scalars,
+        eval=eval_scalars,
+        non_finite_keys={
+            "train": train_non_finite,
+            "eval": eval_non_finite,
+        },
+    )
+
+    summary_path = os.path.abspath(os.path.expanduser(str(summary_path)))
+    summary_dir = os.path.dirname(summary_path)
+    if summary_dir:
+        os.makedirs(summary_dir, exist_ok=True)
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, sort_keys=True, allow_nan=False)
+        f.write("\n")
+    logging.info(f"Saved training summary to {summary_path}")
 
 
 @hydra.main(config_path=CONFIG_PATH, config_name="train", version_base=None)
@@ -123,6 +183,7 @@ def main(cfg: DictConfig):
             run.log_artifact(artifact)
         run.save(ckpt_path, policy="now", base_path=run.dir)
         logging.info(f"Saved checkpoint to {str(ckpt_path)}")
+        return ckpt_path
 
     assert env.training
     def should_save(i):
@@ -157,6 +218,7 @@ def main(cfg: DictConfig):
 
     env_frames = 0
     start_iter = env.current_iter
+    last_train_info = {}
     for i in progress:
         rollout_start = time.perf_counter()
         with torch.inference_mode(), set_exploration_type(ExplorationType.RANDOM):
@@ -203,14 +265,18 @@ def main(cfg: DictConfig):
         if aa.is_main_process():
             # print(OmegaConf.to_yaml({k: v for k, v in info.items() if (isinstance(v, (float, int)) and not k.startswith("performance_reward"))}))
             run.log(info)
+            last_train_info = info
 
     # 5. --- Finalization and Cleanup ---
+    checkpoint_final = os.path.join(run.dir, "checkpoint_final.pt")
     if aa.is_main_process():
-        save(policy, "checkpoint_final", artifact=True)
+        checkpoint_final = save(policy, "checkpoint_final", artifact=True)
 
     policy_eval = policy.get_rollout_policy("eval")
     info, trajs, stats, policy_trajs = evaluate(env, policy_eval, render=cfg.eval_render, seed=cfg.seed)
     run.log(info)
+    if aa.is_main_process():
+        _write_train_summary(cfg, env, run, env_frames, total_frames, total_iters, checkpoint_final, last_train_info, info)
 
     run_id = run.id
     project = run.project
@@ -232,4 +298,3 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     main()
-

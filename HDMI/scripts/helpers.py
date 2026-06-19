@@ -252,7 +252,7 @@ def evaluate(
         indices = first_done.reshape(first_done.shape+(1,)*(tensor.ndim-2))
         return torch.take_along_dim(tensor, indices, dim=1).reshape(-1)
 
-    info = {}
+    info = {"performance/inference_time": inference_time}
     stats = {}
     episode_len = take_first_episode(trajs["next", "stats", "episode_len"])
     # shape: (num_envs,)

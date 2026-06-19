@@ -1,5 +1,6 @@
 import ast
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -446,6 +447,7 @@ def test_mujoco_object_train_script_runs_minimal_ppo_loop(tmp_path):
 
 
 def test_mujoco_object_train_script_runs_batched_ppo_loop(tmp_path):
+    summary_path = tmp_path / "mujoco-batched-summary.json"
     result = _run_train_script_smoke(
         tmp_path,
         "G1/hdmi/push_box",
@@ -456,11 +458,21 @@ def test_mujoco_object_train_script_runs_batched_ppo_loop(tmp_path):
             "algo.train_every=4",
             "algo.num_minibatches=2",
             "total_frames=32",
+            f"train_summary_path={summary_path}",
         ],
     )
 
     assert result.returncode == 0, result.stdout[-4000:]
     assert "Average inference time: nan" not in result.stdout
+    assert summary_path.exists(), result.stdout[-4000:]
+
+    summary = json.loads(summary_path.read_text())
+    assert summary["backend"] == "mujoco"
+    assert summary["num_envs"] == 4
+    assert summary["train_every"] == 4
+    assert summary["env_frames"] == 32
+    assert Path(summary["checkpoint_final"]).is_file()
+    assert summary["eval"]["performance/inference_time"] >= 0.0
 
 
 def test_train_sequential_script_propagates_child_failure(tmp_path):
