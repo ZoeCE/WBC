@@ -755,6 +755,7 @@ def test_mujoco_playback_parity_cli_uses_exported_policy_reference_future_steps(
             object_joint_name,
             "--policy-path",
             str(policy_path),
+            "--require-reference-observation",
             "--steps",
             "0,1",
         ]
@@ -769,6 +770,14 @@ def test_mujoco_playback_parity_cli_uses_exported_policy_reference_future_steps(
     assert summary["policy_reference_joint_names"] == [meta["joint_names"][0]]
     assert summary["policy_reference_root_body_name"] == meta["body_names"][0]
     assert summary["policy_reference_future_steps"] == [0, 1, 1]
+    assert summary["policy_has_reference_observation"] is True
+    assert summary["policy_reference_observation_keys"] == [
+        "ref_body_pos_future_local",
+        "ref_joint_pos_future",
+        "ref_motion_phase",
+    ]
+    assert summary["policy_requirements_passed"] is True
+    assert summary["policy_requirement_failures"] == []
 
 
 def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path, capsys):
@@ -819,6 +828,45 @@ def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path,
     assert summary["policy_rollout_reward_mean"] == 1.0
     assert summary["policy_rollout_reward_min"] == 1.0
     assert summary["policy_rollout_reward_max"] == 1.0
+
+
+def test_mujoco_playback_parity_cli_requires_reference_observation_for_policy_parity(tmp_path, capsys):
+    object_body_name, object_joint_name = _write_motion_dir(tmp_path)
+    joint_name = json.loads((tmp_path / "meta.json").read_text())["joint_names"][0]
+    policy_path = _write_rollout_policy_bundle(tmp_path, joint_name)
+    script = _load_cli_module()
+
+    exit_code = script.main(
+        [
+            "--motion-dir",
+            str(tmp_path),
+            "--object-name",
+            "door",
+            "--object-body-name",
+            object_body_name,
+            "--object-joint-name",
+            object_joint_name,
+            "--policy-path",
+            str(policy_path),
+            "--policy-rollout",
+            "--steps",
+            "0,1",
+            "--require-reference-observation",
+        ]
+    )
+
+    assert exit_code == 1
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["policy_has_reference_observation"] is False
+    assert summary["policy_reference_observation_keys"] == []
+    assert summary["policy_requirements_passed"] is False
+    assert summary["policy_requirement_failures"] == [
+        {
+            "requirement": "policy_reference_observation",
+            "actual": False,
+        }
+    ]
+
 
 def test_mujoco_playback_parity_cli_passes_policy_rollout_threshold_gate(tmp_path, capsys):
     object_body_name, object_joint_name = _write_motion_dir(tmp_path)

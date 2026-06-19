@@ -115,12 +115,40 @@ def _write_playback_parity_report(tmp_path: Path, *, parity_passed: bool = True)
     return report_path
 
 
+def _write_component_report(tmp_path: Path, *, gate_passed: bool = True) -> Path:
+    report_path = tmp_path / "component_audit.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "component_gate_passed": gate_passed,
+                "covered_components": [
+                    "batched_env",
+                    "object_contact",
+                    "domain_randomization",
+                    "reward_parity",
+                ],
+                "component_failures": []
+                if gate_passed
+                else [
+                    {
+                        "component": "reward_parity",
+                        "reason": "test_failed",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return report_path
+
+
 def test_migration_audit_passes_with_payloads_mapping_training_policy_and_playback(tmp_path, capsys):
     audit = _load_audit_module()
     manifest_path = _write_payload_manifest(tmp_path, present=True)
     summary_path = _write_train_summary(tmp_path, env_frames=128)
     policy_report_path = _write_policy_export_report(tmp_path, gate_passed=True)
     playback_report_path = _write_playback_parity_report(tmp_path, parity_passed=True)
+    component_report_path = _write_component_report(tmp_path, gate_passed=True)
 
     exit_code = audit.main(
         [
@@ -151,6 +179,9 @@ def test_migration_audit_passes_with_payloads_mapping_training_policy_and_playba
             "--playback-parity-report",
             str(playback_report_path),
             "--require-playback-parity",
+            "--component-report",
+            str(component_report_path),
+            "--require-component-reports",
         ]
     )
 
@@ -166,6 +197,8 @@ def test_migration_audit_passes_with_payloads_mapping_training_policy_and_playba
     assert report["policy_export"]["num_reports"] == 1
     assert report["playback_parity"]["gate_passed"] is True
     assert report["playback_parity"]["num_reports"] == 1
+    assert report["component_reports"]["gate_passed"] is True
+    assert report["component_reports"]["num_reports"] == 1
 
 
 def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, capsys):
@@ -174,6 +207,7 @@ def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, 
     summary_path = _write_train_summary(tmp_path, env_frames=32)
     policy_report_path = _write_policy_export_report(tmp_path, gate_passed=False)
     playback_report_path = _write_playback_parity_report(tmp_path, parity_passed=False)
+    component_report_path = _write_component_report(tmp_path, gate_passed=False)
 
     exit_code = audit.main(
         [
@@ -198,6 +232,9 @@ def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, 
             "--playback-parity-report",
             str(playback_report_path),
             "--require-playback-parity",
+            "--component-report",
+            str(component_report_path),
+            "--require-component-reports",
         ]
     )
 
@@ -210,3 +247,4 @@ def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, 
     assert "training" in failure_components
     assert "policy_export" in failure_components
     assert "playback_parity" in failure_components
+    assert "component_reports" in failure_components

@@ -53,6 +53,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         require_policy_export=args.require_policy_export,
         playback_parity_reports=[Path(path) for path in args.playback_parity_report],
         require_playback_parity=args.require_playback_parity,
+        component_reports=[Path(path) for path in args.component_report],
+        require_component_reports=args.require_component_reports,
     )
     print(json.dumps(report, sort_keys=True))
     return 0 if report["migration_passed"] else 1
@@ -81,6 +83,8 @@ def build_migration_audit(
     require_policy_export: bool = False,
     playback_parity_reports: Sequence[Path] = (),
     require_playback_parity: bool = False,
+    component_reports: Sequence[Path] = (),
+    require_component_reports: bool = False,
 ) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
 
@@ -176,6 +180,21 @@ def build_migration_audit(
             }
         )
 
+    component_reports_required = require_component_reports or bool(component_reports)
+    component_report = _build_json_report_gate(
+        report_paths=component_reports,
+        pass_key="component_gate_passed",
+        require_reports=require_component_reports,
+    )
+    if component_reports_required and not component_report["gate_passed"]:
+        failures.append(
+            {
+                "component": "component_reports",
+                "reason": "component_report_gate_failed",
+                "failures": component_report.get("failures", []),
+            }
+        )
+
     return {
         "migration_passed": not failures,
         "failures": failures,
@@ -184,6 +203,7 @@ def build_migration_audit(
         "training": training,
         "policy_export": policy_export,
         "playback_parity": playback_parity,
+        "component_reports": component_report,
     }
 
 
@@ -331,6 +351,7 @@ def _build_json_report_gate(
                     "actual": report.get(pass_key),
                     "missing_requirements": report.get("missing_requirements"),
                     "threshold_failures": report.get("threshold_failures"),
+                    "component_failures": report.get("component_failures"),
                 }
             )
 
@@ -405,7 +426,7 @@ def _parse_metric_thresholds(raw: Sequence[Sequence[str]] | None) -> dict[str, f
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Aggregate MuJoCo migration evidence for payloads, task mappings, and training gates."
+        description="Aggregate MuJoCo migration evidence across assets, mappings, training, playback, and components."
     )
     parser.add_argument("--payload-manifest", default=str(DEFAULT_PAYLOAD_MANIFEST))
     parser.add_argument("--payload-root", default=str(HDMI_ROOT))
@@ -431,6 +452,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--require-policy-export", action="store_true")
     parser.add_argument("--playback-parity-report", action="append", default=[], metavar="PATH")
     parser.add_argument("--require-playback-parity", action="store_true")
+    parser.add_argument("--component-report", action="append", default=[], metavar="PATH")
+    parser.add_argument("--require-component-reports", action="store_true")
     return parser.parse_args(argv)
 
 

@@ -62,6 +62,15 @@ KINEMATIC_REWARD_TERMS = {
 }
 
 _OBJECT_POSE_OBS_KEYS = ("object_xy_b", "object_heading_b", "object_pos_b", "object_ori_b")
+_REFERENCE_OBSERVATION_KEYS = frozenset(
+    {
+        "ref_body_pos_future_local",
+        "ref_joint_pos_future",
+        "ref_motion_phase",
+        "ref_contact_pos_b",
+        "diff_contact_pos_b",
+    }
+)
 
 
 def run_parity(
@@ -324,7 +333,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if mapping_report is not None:
             summary.update(_task_mapping_summary(mapping_report))
-        exit_code = _apply_threshold_gate(summary, args)
+        threshold_exit_code = _apply_threshold_gate(summary, args)
+        policy_requirement_exit_code = _apply_policy_requirement_gate(summary, args)
+        exit_code = 1 if threshold_exit_code or policy_requirement_exit_code else 0
     print(json.dumps(summary, sort_keys=True))
     return exit_code
 
@@ -353,6 +364,14 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--policy-rollout",
         action="store_true",
         help="Run the exported policy in a closed-loop MuJoCo rollout and report rollout parity metrics.",
+    )
+    parser.add_argument(
+        "--require-reference-observation",
+        action="store_true",
+        help=(
+            "Fail unless the exported policy observation config contains reference/command inputs. "
+            "Use this before interpreting closed-loop policy rollout as motion-tracking parity."
+        ),
     )
     parser.add_argument(
         "--trace-json",
@@ -396,6 +415,24 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="Fail with exit code 1 when policy_rollout_reward_mean is absent or below this threshold.",
     )
     return parser.parse_args(argv)
+
+
+def _apply_policy_requirement_gate(summary: dict[str, Any], args: argparse.Namespace) -> int:
+    if not args.require_reference_observation:
+        return 0
+
+    failures: list[dict[str, Any]] = []
+    if summary.get("policy_has_reference_observation") is not True:
+        failures.append(
+            {
+                "requirement": "policy_reference_observation",
+                "actual": bool(summary.get("policy_has_reference_observation", False)),
+            }
+        )
+    summary["policy_requirements"] = {"require_reference_observation": True}
+    summary["policy_requirement_failures"] = failures
+    summary["policy_requirements_passed"] = not failures
+    return 1 if failures else 0
 
 
 def _apply_threshold_gate(summary: dict[str, Any], args: argparse.Namespace) -> int:
@@ -716,6 +753,7 @@ def run_policy_playback_smoke(
     num_envs: int,
 ) -> dict[str, Any]:
     bundle = MujocoPolicyBundle.load(policy_path)
+    observation_summary = _policy_observation_summary(bundle)
     steps_t = _normalize_policy_steps(steps, reference.num_steps)
     action_history = torch.zeros(num_envs, bundle.action_dim, _policy_action_history_steps(bundle))
     applied_action = torch.zeros(num_envs, bundle.action_dim)
@@ -762,7 +800,38 @@ def run_policy_playback_smoke(
         "policy_action_mean": float(actions_t.mean().item()),
         "policy_action_max_abs": float(actions_t.abs().max().item()),
         "policy_joint_target_mean": float(targets_t.mean().item()),
+        **observation_summary,
     }
+
+
+def _policy_observation_summary(bundle: MujocoPolicyBundle) -> dict[str, Any]:
+    observation_keys = _policy_observation_keys(bundle.observation_builder.observation_cfg)
+    reference_keys = _policy_reference_observation_keys(observation_keys)
+    return {
+        "policy_observation_groups": list(observation_keys),
+        "policy_observation_keys": observation_keys,
+        "policy_has_reference_observation": bool(reference_keys),
+        "policy_reference_observation_keys": reference_keys,
+    }
+
+
+def _policy_observation_keys(observation_cfg: Mapping[str, Any]) -> dict[str, list[str]]:
+    return {
+        str(group_name): [str(obs_key) for obs_key in (group_cfg or {}).keys()]
+        for group_name, group_cfg in observation_cfg.items()
+    }
+
+
+def _policy_reference_observation_keys(observation_keys: Mapping[str, Sequence[str]]) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for group_keys in observation_keys.values():
+        for obs_key in group_keys:
+            if obs_key not in _REFERENCE_OBSERVATION_KEYS or obs_key in seen:
+                continue
+            seen.add(obs_key)
+            found.append(obs_key)
+    return found
 
 
 def _policy_state_from_reference(
