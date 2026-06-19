@@ -239,6 +239,22 @@ def test_eval_multiple_mujoco_backend_sets_backend_without_launching_isaac_app()
         aa.set_backend("isaac")
 
 
+def test_eval_multiple_builds_local_checkpoint_spec_without_wandb(tmp_path):
+    script = _load_eval_multiple_module()
+    checkpoint_path = tmp_path / "checkpoint_final.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+
+    specs = script._build_checkpoint_specs(str(checkpoint_path), [100])
+
+    assert specs == [
+        {
+            "label": "checkpoint_final",
+            "source": "local",
+            "path": str(checkpoint_path),
+        }
+    ]
+
+
 def test_eval_run_parser_accepts_mujoco_playback_flag():
     script = _load_eval_run_module()
 
