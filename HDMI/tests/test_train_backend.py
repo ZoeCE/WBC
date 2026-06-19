@@ -354,7 +354,7 @@ def test_mujoco_train_smoke_builds_env_policy_and_steps_once():
         aa.set_backend("isaac")
 
 
-def _run_train_script_smoke(tmp_path, task: str, run_name: str):
+def _run_train_script_smoke(tmp_path, task: str, run_name: str, extra_overrides: list[str] | None = None):
     run_dir = tmp_path / run_name
     command = [
         sys.executable,
@@ -374,6 +374,8 @@ def _run_train_script_smoke(tmp_path, task: str, run_name: str):
         "eval_render=false",
         f"hydra.run.dir={run_dir}",
     ]
+    if extra_overrides:
+        command.extend(extra_overrides)
     env = {
         **os.environ,
         "WANDB_SILENT": "true",
@@ -440,6 +442,24 @@ def test_mujoco_object_train_script_runs_minimal_ppo_loop(tmp_path):
 
     assert result.returncode == 0, result.stdout[-4000:]
     assert "Average inference time" in result.stdout
+    assert "Average inference time: nan" not in result.stdout
+
+
+def test_mujoco_object_train_script_runs_batched_ppo_loop(tmp_path):
+    result = _run_train_script_smoke(
+        tmp_path,
+        "G1/hdmi/push_box",
+        "mujoco-object-train-batched-smoke",
+        extra_overrides=[
+            "task.num_envs=4",
+            "task.max_episode_length=8",
+            "algo.train_every=4",
+            "algo.num_minibatches=2",
+            "total_frames=32",
+        ],
+    )
+
+    assert result.returncode == 0, result.stdout[-4000:]
     assert "Average inference time: nan" not in result.stdout
 
 
