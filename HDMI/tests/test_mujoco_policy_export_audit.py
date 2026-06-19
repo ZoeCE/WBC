@@ -18,7 +18,7 @@ def _load_audit_cli_module():
     return module
 
 
-def _write_policy_export(export_dir: Path) -> Path:
+def _write_policy_export(export_dir: Path, *, reference_observation: bool = False) -> Path:
     export_dir.mkdir(parents=True)
     policy_path = export_dir / "policy-test-final.pt"
     module = TensorDictModule(
@@ -27,17 +27,20 @@ def _write_policy_export(export_dir: Path) -> Path:
         out_keys=["action"],
     )
     torch.save(module, policy_path)
+    observation = {
+        "policy": {
+            "joint_pos_history": {
+                "joint_names": ["left_hip_pitch_joint"],
+                "history_steps": [0],
+            }
+        }
+    }
+    if reference_observation:
+        observation["command"] = {"ref_motion_phase": {}}
     policy_path.with_suffix(".yaml").write_text(
         yaml.safe_dump(
             {
-                "observation": {
-                    "policy": {
-                        "joint_pos_history": {
-                            "joint_names": ["left_hip_pitch_joint"],
-                            "history_steps": [0],
-                        }
-                    }
-                },
+                "observation": observation,
                 "action_scale": 1.0,
                 "policy_joint_names": ["left_hip_pitch_joint"],
                 "isaac_joint_names": ["left_hip_pitch_joint"],
@@ -112,3 +115,54 @@ def test_policy_export_audit_loads_policy_and_validates_task_mapping(tmp_path, c
     assert exit_code == 0
     assert summary["gate_passed"] is True
     assert summary["missing_requirements"] == []
+    assert summary["policy_observation_groups"] == ["policy"]
+    assert summary["policy_observation_keys"] == {"policy": ["joint_pos_history"]}
+    assert summary["policy_has_reference_observation"] is False
+    assert summary["policy_reference_observation_keys"] == []
+
+
+def test_policy_export_audit_can_require_reference_observation(tmp_path, capsys):
+    module = _load_audit_cli_module()
+    task_path = ROOT / "cfg/task/G1/hdmi/push_box.yaml"
+    policy_path = _write_policy_export(tmp_path / "exports/G1PushBox")
+
+    exit_code = module.main(
+        [
+            "--task-yaml",
+            str(task_path),
+            "--policy-path",
+            str(policy_path),
+            "--require-policy",
+            "--require-reference-observation",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert summary["gate_passed"] is False
+    assert summary["policy_has_reference_observation"] is False
+    assert summary["missing_requirements"] == ["policy_reference_observation"]
+
+
+def test_policy_export_audit_passes_when_reference_observation_is_present(tmp_path, capsys):
+    module = _load_audit_cli_module()
+    task_path = ROOT / "cfg/task/G1/hdmi/push_box.yaml"
+    policy_path = _write_policy_export(tmp_path / "exports/G1PushBox", reference_observation=True)
+
+    exit_code = module.main(
+        [
+            "--task-yaml",
+            str(task_path),
+            "--policy-path",
+            str(policy_path),
+            "--require-policy",
+            "--require-reference-observation",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert summary["gate_passed"] is True
+    assert summary["missing_requirements"] == []
+    assert summary["policy_has_reference_observation"] is True
+    assert summary["policy_reference_observation_keys"] == ["ref_motion_phase"]

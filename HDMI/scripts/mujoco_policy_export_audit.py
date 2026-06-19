@@ -19,6 +19,16 @@ from active_adaptation.mujoco.task_mapping import (
     validate_task_motion_mapping,
 )
 
+_REFERENCE_OBSERVATION_KEYS = frozenset(
+    {
+        "ref_body_pos_future_local",
+        "ref_joint_pos_future",
+        "ref_motion_phase",
+        "ref_contact_pos_b",
+        "diff_contact_pos_b",
+    }
+)
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
@@ -28,9 +38,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         exports_dir=args.exports_dir,
         checkpoint_path=args.checkpoint_path,
         robot_name=args.robot_name,
+        require_reference_observation=args.require_reference_observation,
     )
     print(json.dumps(report, sort_keys=True))
-    if args.require_policy and not report["gate_passed"]:
+    if (args.require_policy or args.require_reference_observation) and not report["gate_passed"]:
         return 1
     return 0
 
@@ -42,6 +53,7 @@ def build_policy_export_audit(
     exports_dir: str | Path | None = None,
     checkpoint_path: str | None = None,
     robot_name: str = "g1_29dof",
+    require_reference_observation: bool = False,
 ) -> dict[str, Any]:
     task_path = Path(task_yaml)
     task_cfg = _load_yaml_mapping(task_path)
@@ -87,6 +99,11 @@ def build_policy_export_audit(
         "policy_joint_names": [],
         "policy_observation_joint_names": [],
         "policy_isaac_body_names": [],
+        "policy_observation_groups": [],
+        "policy_observation_keys": {},
+        "policy_has_reference_observation": None,
+        "policy_reference_observation_keys": [],
+        "require_reference_observation": bool(require_reference_observation),
         "num_policy_body_mappings": None,
         "num_policy_joint_mappings": None,
     }
@@ -95,7 +112,10 @@ def build_policy_export_audit(
         _annotate_policy_load(report, resolved_policy_path)
         _annotate_policy_mapping(report, policy_config_path, task_path, robot_name=robot_name)
 
-    report["missing_requirements"] = _missing_requirements(report)
+    report["missing_requirements"] = _missing_requirements(
+        report,
+        require_reference_observation=require_reference_observation,
+    )
     report["gate_passed"] = not report["missing_requirements"]
     return report
 
@@ -133,6 +153,14 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         action="store_true",
         help="Return exit code 1 unless the policy export exists, loads, and maps to the task/motion/MJCF names.",
     )
+    parser.add_argument(
+        "--require-reference-observation",
+        action="store_true",
+        help=(
+            "Return exit code 1 unless the exported actor observation config contains a reference/command "
+            "observation needed for closed-loop motion tracking parity."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -151,6 +179,12 @@ def _annotate_policy_load(report: dict[str, Any], policy_path: Path | None) -> N
     report["policy_joint_names"] = list(bundle.policy_joint_names)
     report["policy_observation_joint_names"] = list(bundle.observation_joint_names)
     report["policy_isaac_body_names"] = list(bundle.isaac_body_names)
+    observation_keys = _policy_observation_keys(bundle.observation_builder.observation_cfg)
+    reference_keys = _policy_reference_observation_keys(observation_keys)
+    report["policy_observation_groups"] = list(observation_keys)
+    report["policy_observation_keys"] = observation_keys
+    report["policy_reference_observation_keys"] = reference_keys
+    report["policy_has_reference_observation"] = bool(reference_keys)
 
 
 def _annotate_policy_mapping(
@@ -178,7 +212,11 @@ def _annotate_policy_mapping(
     report["num_policy_joint_mappings"] = len(policy_report.policy_joint_name_mapping)
 
 
-def _missing_requirements(report: dict[str, Any]) -> list[str]:
+def _missing_requirements(
+    report: dict[str, Any],
+    *,
+    require_reference_observation: bool,
+) -> list[str]:
     missing: list[str] = []
     if not report["policy_exists"]:
         missing.append("exported_policy_pt")
@@ -188,7 +226,28 @@ def _missing_requirements(report: dict[str, Any]) -> list[str]:
         missing.append("policy_loadable")
     if report["policy_mapping_ok"] is not True:
         missing.append("policy_task_motion_mjcf_mapping")
+    if require_reference_observation and report["policy_has_reference_observation"] is not True:
+        missing.append("policy_reference_observation")
     return missing
+
+
+def _policy_observation_keys(observation_cfg: Mapping[str, Any]) -> dict[str, list[str]]:
+    return {
+        str(group_name): [str(obs_key) for obs_key in (group_cfg or {}).keys()]
+        for group_name, group_cfg in observation_cfg.items()
+    }
+
+
+def _policy_reference_observation_keys(observation_keys: Mapping[str, Sequence[str]]) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for group_keys in observation_keys.values():
+        for obs_key in group_keys:
+            if obs_key not in _REFERENCE_OBSERVATION_KEYS or obs_key in seen:
+                continue
+            seen.add(obs_key)
+            found.append(obs_key)
+    return found
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
