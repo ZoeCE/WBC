@@ -1,1 +1,6 @@
 IsaacLab/
+
+# External MuJoCo migration payloads. Keep checksums and task ownership in
+# HDMI/mujoco_external_payloads.yaml instead of committing new large binaries.
+HDMI/active_adaptation/assets/g1/
+HDMI/data/motion/**/motion.npz

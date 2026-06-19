@@ -1,0 +1,138 @@
+version: 1
+payloads:
+  - path: active_adaptation/assets/g1/g1_29dof_nohand-feet_sphere-eef_L-body_capsule.usd
+    kind: isaac_usd_robot_asset
+    required: false
+    size_bytes: 20817173
+    sha256: dc24fd9fb205be3c558c14015bde5e65827d8b28f5ef536889dd2ca101780912
+    note: Local Isaac USD robot asset kept out of regular Git; MuJoCo uses assets_mjcf instead.
+  - path: active_adaptation/assets/g1/g1_29dof_nohand-feet_sphere.usd
+    kind: isaac_usd_robot_asset
+    required: false
+    size_bytes: 20192438
+    sha256: 670c5b18aa23abbec516efaddebeb21ab7685d1ccafa620a141bdee80d2a3814
+    note: Local Isaac USD robot asset kept out of regular Git; MuJoCo uses assets_mjcf instead.
+  - path: active_adaptation/assets/g1/g1_29dof_rubberhand-feet_box-eef_box-body_capsule.usd
+    kind: isaac_usd_robot_asset
+    required: false
+    size_bytes: 27245807
+    sha256: 68dad86f2aec6a38e8ca378cffdddd2fa713d24e46fce695c5ed643ceb1416a6
+    note: Local Isaac USD robot asset kept out of regular Git; MuJoCo uses assets_mjcf instead.
+  - path: active_adaptation/assets/g1/g1_29dof_rubberhand-feet_sphere-eef_box-body_capsule.usd
+    kind: isaac_usd_robot_asset
+    required: false
+    size_bytes: 27246027
+    sha256: faf4d267a7a93fd16186e77e4c2802aa8ea977b5bb971b72fa63dee99c33200d
+    note: Local Isaac USD robot asset kept out of regular Git; MuJoCo uses assets_mjcf instead.
+  - path: data/motion/data_for_sim/carry_and_place_bread_box-0829/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 1666169
+    sha256: ff35558659a4b7fca63df6fc686cfd518b40bbc2cf4e3b5063e69e0ea73d7344
+    task_configs:
+      - cfg/task/G1/hdmi/carry_and_place_bread_box.yaml
+  - path: data/motion/data_for_sim/carry_and_place_bread_box/motion.npz
+    kind: motion_npz
+    required: false
+    note: Legacy tracking config path; not present in the A5000 workspace at manifest creation time.
+    task_configs:
+      - cfg/task/G1/tracking/carry_and_place_bread_box.yaml
+  - path: data/motion/data_for_sim/combo-2/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 8288621
+    sha256: d7cb56b148096b62762a8641b11170506b148636c8e2ea4a6107b8ef79b9663c
+    task_configs:
+      - cfg/task/G1/hdmi/truman.yaml
+  - path: data/motion/data_for_sim/lift_box_over_shoulder/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 1149407
+    sha256: 01811f0bb0c005601691f130e7b08618b4d5b263d80dd8c4ff31ee14ac14aa76
+    task_configs:
+      - cfg/task/G1/hdmi/carry_box_over_shoulder.yaml
+  - path: data/motion/data_for_sim/move_foam-climb-0825-2-0_580/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 1246282
+    sha256: 35306a71a3642c731215c5ea2c62160a37236621c596c315e133d91350c78b9c
+    task_configs:
+      - cfg/task/G1/hdmi/move_foam.yaml
+  - path: data/motion/data_for_sim/move_stool-climb-0814/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 1660372
+    sha256: cbf4a73edbc097776aa85e0041841d802d3cb511652bab99b416d0cf1244887e
+    task_configs:
+      - cfg/task/G1/hdmi/move_stool-climb.yaml
+  - path: data/motion/data_for_sim/open_door-feet-0828/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 1982533
+    sha256: 18f2f4bef77c58ab860e58fee9ba706e5c204dce4187fa50790493fbcd822de8
+    task_configs:
+      - cfg/task/G1/hdmi/open_door-feet.yaml
+  - path: data/motion/data_for_sim/push_door-hand-0828/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 829813
+    sha256: a4b6027aaea6d4892969fab5464858f914fc6f5bbee165e39af9e39668c4808d
+    task_configs:
+      - cfg/task/G1/hdmi/push_door-hand.yaml
+  - path: data/motion/data_for_sim/topple_wood_board_and_cross/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 1364056
+    sha256: 6fd9d3d696c37a3f938c9cecc58aa78a646d7419e3484d8e7f01cc637739dcc5
+    task_configs:
+      - cfg/task/G1/hdmi/topple_wood_board_and_cross.yaml
+  - path: data/motion/data_for_sim/traverse_door/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 3075802
+    sha256: aa459e598ffd384bc368454925b501dffe9b4ba573d287b02e1dcbe449e9541f
+    task_configs:
+      - cfg/task/G1/hdmi/traverse_door.yaml
+  - path: data/motion/g1/multi_motion_0726/open_chair_and_sit_amass/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 1353773
+    sha256: 3f56d50deda1728ad4f6be18933982a9e06511eaf569ab5f137c3ea95e7255a2
+    task_configs:
+      - cfg/task/G1/hdmi/open_foldchair-sit.yaml
+  - path: data/motion/g1/multi_motion_0726/roll_ball_amass/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 1571341
+    sha256: 9c0d4028550f32d59805cc20cf85923ae75bf0df3e1b04912bdf5dcce2529397
+    task_configs:
+      - cfg/task/G1/hdmi/roll_ball-hand.yaml
+  - path: data/motion/g1/omomo/sub1_suitcase_011/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 855988
+    sha256: d6d08c5792fc7396c89629876d91cfec26404fd803ccb9ffc2439c66ce51f3cf
+    task_configs:
+      - cfg/task/G1/hdmi/move_suitcase.yaml
+      - cfg/task/G1/tracking/move-suitcase.yaml
+  - path: data/motion/g1/push_box/push_box-VID_20250423_220958-light-high-adjust_root_height/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 1319693
+    sha256: 8921f589f8470d25ab1dd0fa65f9b9057676ab122fdcc8d87f43d9c527ed461e
+    task_configs:
+      - cfg/task/G1/hdmi/push_box.yaml
+  - path: data/motion/g1/walk1_subject1-3_12/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 2164748
+    sha256: bae6e2afab82f4e76580c5769478ecb0d91e0ac728052ec0c809f2376c8c816d
+    task_configs:
+      - cfg/task/G1/tracking/walk.yaml
+  - path: data/motion/lafan/dance1_subject2-270_1000/motion.npz
+    kind: motion_npz
+    required: true
+    size_bytes: 2030562
+    sha256: 3f1c481530935ff6d03ec3359dde5d829b7a5e63910377fc7e1a8caa782f0eb2
+    task_configs:
+      - cfg/task/G1/tracking/dance.yaml

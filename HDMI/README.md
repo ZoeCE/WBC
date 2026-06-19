@@ -93,6 +93,21 @@ python scripts/vis/mujoco_mocap_viewer.py
 python scripts/vis/motion_data_publisher.py <path-to-motion-folder>
 ```
 
+### External Payload Manifest
+Large local payloads for MuJoCo migration are tracked by checksum in
+`mujoco_external_payloads.yaml` instead of being added to regular Git history.
+This covers task-owned `motion.npz` files and local Isaac USD robot assets under
+`active_adaptation/assets/g1/`.
+
+Audit the current workspace:
+
+```bash
+python scripts/mujoco_external_payloads.py --include-task-motion
+python scripts/mujoco_external_payloads.py --verify-sha256 --require-present
+```
+
+`required_missing` must be empty before running MuJoCo training or playback.
+
 ## Train and Evaluate
 
 Teacher policy 
