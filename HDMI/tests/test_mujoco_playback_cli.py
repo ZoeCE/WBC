@@ -1,9 +1,11 @@
 import importlib
 import importlib.util
 import json
+import math
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 import yaml
 from tensordict.nn import TensorDictModule
@@ -18,6 +20,351 @@ def _load_cli_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_task_robot_type_selects_rubberhand_registry_key():
+    module = _load_cli_module()
+    task_cfg = {
+        "robot": {
+            "robot_type": "g1_29dof_rubberhand-feet_box-eef_box-body_capsule",
+        }
+    }
+
+    assert module._resolve_robot_name_from_task_cfg(None, task_cfg) == "g1_29dof_rubberhand"
+
+
+def test_explicit_robot_name_overrides_task_robot_type():
+    module = _load_cli_module()
+    task_cfg = {
+        "robot": {
+            "robot_type": "g1_29dof_rubberhand-feet_box-eef_box-body_capsule",
+        }
+    }
+
+    assert module._resolve_robot_name_from_task_cfg("g1_29dof", task_cfg) == "g1_29dof"
+
+
+def test_rubberhand_foam_asset_uses_sim2real_scene(monkeypatch):
+    sim2real_root = Path("/home/zoe/Workspace/sim2real-hdmi")
+    if not sim2real_root.is_dir():
+        pytest.skip(f"sim2real HDMI checkout is not available at {sim2real_root}")
+
+    monkeypatch.setenv("HDMI_SIM2REAL_ROOT", str(sim2real_root))
+    import active_adaptation.assets_mjcf as assets
+
+    assets.ROBOTS.clear()
+    assets.ROBOTS._loaded = False
+
+    robot = assets.ROBOTS.with_object("g1_29dof_rubberhand", object_asset_name="foam")
+
+    assert Path(robot.mjcf_path).name == "g1_29dof_rubberhand-foam.xml"
+    assert Path(robot.mjcf_path).parent == sim2real_root / "data/robots/g1"
+
+
+def test_rubberhand_foam_with_support_asset_exposes_stool_support(monkeypatch):
+    sim2real_root = Path("/home/zoe/Workspace/sim2real-hdmi")
+    if not sim2real_root.is_dir():
+        pytest.skip(f"sim2real HDMI checkout is not available at {sim2real_root}")
+
+    monkeypatch.setenv("HDMI_SIM2REAL_ROOT", str(sim2real_root))
+    import active_adaptation.assets_mjcf as assets
+
+    assets.ROBOTS.clear()
+    assets.ROBOTS._loaded = False
+
+    robot = assets.ROBOTS.with_object(
+        "g1_29dof_rubberhand",
+        object_asset_name="foam",
+        object_type="foam_with_support",
+    )
+
+    assert Path(robot.mjcf_path).name == "g1_29dof_rubberhand-foam_with_support.xml"
+    assert {"foam", "stool_support"} <= set(robot.object_specs)
+
+
+def test_rubberhand_suitcase_asset_aliases_suitcase_body(monkeypatch):
+    sim2real_root = Path("/home/zoe/Workspace/sim2real-hdmi")
+    if not sim2real_root.is_dir():
+        pytest.skip(f"sim2real HDMI checkout is not available at {sim2real_root}")
+
+    monkeypatch.setenv("HDMI_SIM2REAL_ROOT", str(sim2real_root))
+    import active_adaptation.assets_mjcf as assets
+
+    assets.ROBOTS.clear()
+    assets.ROBOTS._loaded = False
+
+    robot = assets.ROBOTS.with_object("g1_29dof_rubberhand", object_asset_name="suitcase")
+
+    assert "suitcase" in robot.object_specs
+    assert robot.object_specs["suitcase"].body_names == ("suitcase_body",)
+
+
+def test_rubberhand_bread_box_asset_uses_local_support_includes_when_upstream_include_is_missing(monkeypatch):
+    sim2real_root = Path("/home/zoe/Workspace/sim2real-hdmi")
+    if not sim2real_root.is_dir():
+        pytest.skip(f"sim2real HDMI checkout is not available at {sim2real_root}")
+    if (sim2real_root / "data/objects/bread_box/bread_box_with_support.xml").is_file():
+        pytest.skip("upstream sim2real checkout already has bread_box_with_support.xml")
+
+    monkeypatch.setenv("HDMI_SIM2REAL_ROOT", str(sim2real_root))
+    import active_adaptation.assets_mjcf as assets
+
+    assets.ROBOTS.clear()
+    assets.ROBOTS._loaded = False
+
+    robot = assets.ROBOTS.with_object("g1_29dof_rubberhand", object_asset_name="bread_box")
+
+    assert {"bread_box", "support0", "support1"} <= set(robot.object_specs)
+
+
+def test_suitcase_body_alias_validates_task_motion_mapping(tmp_path, monkeypatch):
+    sim2real_root = Path("/home/zoe/Workspace/sim2real-hdmi")
+    if not sim2real_root.is_dir():
+        pytest.skip(f"sim2real HDMI checkout is not available at {sim2real_root}")
+
+    monkeypatch.setenv("HDMI_SIM2REAL_ROOT", str(sim2real_root))
+    import active_adaptation.assets_mjcf as assets
+    from active_adaptation.mujoco.task_mapping import validate_task_motion_mapping
+
+    assets.ROBOTS.clear()
+    assets.ROBOTS._loaded = False
+
+    motion_dir = tmp_path / "data/motion/lift"
+    motion_dir.mkdir(parents=True)
+    np.savez_compressed(
+        motion_dir / "motion.npz",
+        body_pos_w=np.array([[[0.0, 0.0, 0.76], [0.5, 0.0, 0.3]]], dtype=np.float32),
+        body_quat_w=np.array([[[1.0, 0.0, 0.0, 0.0]] * 2], dtype=np.float32),
+        joint_pos=np.array([[0.0, 0.0]], dtype=np.float32),
+    )
+    (motion_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "body_names": ["pelvis", "suitcase"],
+                "joint_names": ["left_hip_pitch_joint", "left_hip_roll_joint"],
+                "fps": 50.0,
+            }
+        )
+    )
+    task_yaml = tmp_path / "cfg/task/G1/hdmi/lift.yaml"
+    task_yaml.parent.mkdir(parents=True)
+    task_yaml.write_text(
+        """
+command:
+  data_path: data/motion/lift
+  root_body_name: pelvis
+  object_asset_name: suitcase
+  object_body_name: suitcase
+""".strip()
+    )
+
+    report = validate_task_motion_mapping(
+        task_yaml,
+        robot_name="g1_29dof_rubberhand",
+    )
+
+    assert report.reference_object_body_name == "suitcase"
+    assert report.body_name_mapping[1].name == "suitcase"
+
+
+def test_suitcase_body_alias_builds_contact_filter_with_mujoco_body(tmp_path, monkeypatch):
+    sim2real_root = Path("/home/zoe/Workspace/sim2real-hdmi")
+    if not sim2real_root.is_dir():
+        pytest.skip(f"sim2real HDMI checkout is not available at {sim2real_root}")
+
+    monkeypatch.setenv("HDMI_SIM2REAL_ROOT", str(sim2real_root))
+    import active_adaptation.assets_mjcf as assets
+
+    assets.ROBOTS.clear()
+    assets.ROBOTS._loaded = False
+
+    motion_dir = tmp_path / "suitcase_motion"
+    motion_dir.mkdir()
+    np.savez_compressed(
+        motion_dir / "motion.npz",
+        body_pos_w=np.array([[[0.0, 0.0, 0.76], [0.5, 0.0, 0.3]]], dtype=np.float32),
+        body_quat_w=np.array([[[1.0, 0.0, 0.0, 0.0]] * 2], dtype=np.float32),
+        joint_pos=np.array([[0.0]], dtype=np.float32),
+    )
+    (motion_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "body_names": ["pelvis", "suitcase"],
+                "joint_names": ["left_hip_pitch_joint"],
+                "fps": 50.0,
+            }
+        )
+    )
+    module = _load_cli_module()
+
+    summary = module.run_parity(
+        motion_dir=motion_dir,
+        robot_name="g1_29dof_rubberhand",
+        object_name="suitcase",
+        object_body_name="suitcase",
+        contact_eef_body_names=["left_wrist_yaw_link"],
+        steps=[0],
+    )
+
+    assert summary["scene_mjcf_path"].endswith("g1_29dof_rubberhand-suitcase.xml")
+
+
+def test_suitcase_body_alias_fills_policy_object_observation(tmp_path, monkeypatch):
+    sim2real_root = Path("/home/zoe/Workspace/sim2real-hdmi")
+    if not sim2real_root.is_dir():
+        pytest.skip(f"sim2real HDMI checkout is not available at {sim2real_root}")
+
+    monkeypatch.setenv("HDMI_SIM2REAL_ROOT", str(sim2real_root))
+    import active_adaptation.assets_mjcf as assets
+
+    assets.ROBOTS.clear()
+    assets.ROBOTS._loaded = False
+
+    motion_dir = tmp_path / "suitcase_motion"
+    motion_dir.mkdir()
+    np.savez_compressed(
+        motion_dir / "motion.npz",
+        body_pos_w=np.array([[[0.0, 0.0, 0.76], [0.5, 0.0, 0.3]]], dtype=np.float32),
+        body_quat_w=np.array([[[1.0, 0.0, 0.0, 0.0]] * 2], dtype=np.float32),
+        joint_pos=np.array([[0.0, 0.0]], dtype=np.float32),
+    )
+    (motion_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "body_names": ["pelvis", "suitcase"],
+                "joint_names": ["left_hip_pitch_joint", "left_hip_roll_joint"],
+                "fps": 50.0,
+            }
+        )
+    )
+    policy_path = _write_object_policy_bundle(tmp_path, "suitcase")
+    policy_cfg_path = policy_path.with_suffix(".yaml")
+    policy_cfg = yaml.safe_load(policy_cfg_path.read_text())
+    policy_cfg["policy_joint_names"] = ["left_hip_pitch_joint", "left_hip_roll_joint"]
+    policy_cfg_path.write_text(yaml.safe_dump(policy_cfg))
+    module = _load_cli_module()
+
+    summary = module.run_parity(
+        motion_dir=motion_dir,
+        robot_name="g1_29dof_rubberhand",
+        object_name="suitcase",
+        object_body_name="suitcase",
+        steps=[0],
+        policy_path=policy_path,
+        policy_rollout=True,
+    )
+
+    assert summary["scene_mjcf_path"].endswith("g1_29dof_rubberhand-suitcase.xml")
+
+
+def test_foam_task_with_stool_support_selects_support_scene_variant():
+    module = _load_cli_module()
+    command_cfg = {
+        "object_asset_name": "foam",
+        "extra_object_names": ["stool_support"],
+    }
+
+    assert (
+        module._resolve_object_type_from_task_cfg(
+            None,
+            command_cfg,
+            robot_name="g1_29dof_rubberhand",
+        )
+        == "foam_with_support"
+    )
+
+
+def test_rubberhand_foam_with_static_support_playback_does_not_require_support_free_joint(
+    tmp_path,
+    monkeypatch,
+):
+    sim2real_root = Path("/home/zoe/Workspace/sim2real-hdmi")
+    if not sim2real_root.is_dir():
+        pytest.skip(f"sim2real HDMI checkout is not available at {sim2real_root}")
+
+    monkeypatch.setenv("HDMI_SIM2REAL_ROOT", str(sim2real_root))
+    import active_adaptation.assets_mjcf as assets
+
+    assets.ROBOTS.clear()
+    assets.ROBOTS._loaded = False
+
+    motion_dir = tmp_path / "foam_with_support_motion"
+    motion_dir.mkdir()
+    np.savez_compressed(
+        motion_dir / "motion.npz",
+        body_pos_w=np.array([[[0.0, 0.0, 0.76], [0.5, 0.0, 0.1], [0.5, 0.0, 0.6]]], dtype=np.float32),
+        body_quat_w=np.array([[[1.0, 0.0, 0.0, 0.0]] * 3], dtype=np.float32),
+        joint_pos=np.array([[0.0]], dtype=np.float32),
+    )
+    (motion_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "body_names": ["pelvis", "stool_support", "foam"],
+                "joint_names": ["left_hip_pitch_joint"],
+                "fps": 50.0,
+            }
+        )
+    )
+    module = _load_cli_module()
+
+    summary = module.run_parity(
+        motion_dir=motion_dir,
+        robot_name="g1_29dof_rubberhand",
+        object_name="foam",
+        object_type="foam_with_support",
+        object_body_name="foam",
+        steps=[0],
+    )
+
+    assert summary["scene_mjcf_path"].endswith("g1_29dof_rubberhand-foam_with_support.xml")
+
+
+def test_rubberhand_foam_with_static_support_policy_rollout_does_not_require_support_free_joint(
+    tmp_path,
+    monkeypatch,
+):
+    sim2real_root = Path("/home/zoe/Workspace/sim2real-hdmi")
+    if not sim2real_root.is_dir():
+        pytest.skip(f"sim2real HDMI checkout is not available at {sim2real_root}")
+
+    monkeypatch.setenv("HDMI_SIM2REAL_ROOT", str(sim2real_root))
+    import active_adaptation.assets_mjcf as assets
+
+    assets.ROBOTS.clear()
+    assets.ROBOTS._loaded = False
+
+    motion_dir = tmp_path / "foam_with_support_motion"
+    motion_dir.mkdir()
+    np.savez_compressed(
+        motion_dir / "motion.npz",
+        body_pos_w=np.array([[[0.0, 0.0, 0.76], [0.5, 0.0, 0.1], [0.5, 0.0, 0.6]]], dtype=np.float32),
+        body_quat_w=np.array([[[1.0, 0.0, 0.0, 0.0]] * 3], dtype=np.float32),
+        joint_pos=np.array([[0.0]], dtype=np.float32),
+    )
+    (motion_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "body_names": ["pelvis", "stool_support", "foam"],
+                "joint_names": ["left_hip_pitch_joint"],
+                "fps": 50.0,
+            }
+        )
+    )
+    policy_path = _write_rollout_policy_bundle(tmp_path, "left_hip_pitch_joint")
+    module = _load_cli_module()
+
+    summary = module.run_parity(
+        motion_dir=motion_dir,
+        robot_name="g1_29dof_rubberhand",
+        object_name="foam",
+        object_type="foam_with_support",
+        object_body_name="foam",
+        steps=[0],
+        policy_path=policy_path,
+        policy_rollout=True,
+    )
+
+    assert summary["scene_mjcf_path"].endswith("g1_29dof_rubberhand-foam_with_support.xml")
 
 
 def _write_motion_dir(tmp_path):
@@ -150,7 +497,8 @@ def _write_rollout_policy_bundle(tmp_path, joint_name):
     return policy_path
 
 
-def _write_object_policy_bundle(tmp_path, object_body_name):
+def _write_object_policy_bundle(tmp_path, object_body_name, contact_object_body_name=None):
+    contact_object_body_name = contact_object_body_name or object_body_name
     module = TensorDictModule(
         torch.nn.Linear(7, 2, bias=False),
         in_keys=["object"],
@@ -169,7 +517,7 @@ def _write_object_policy_bundle(tmp_path, object_body_name):
                         "object_xy_b": {"object_name": object_body_name},
                         "object_heading_b": {"object_name": object_body_name},
                         "ref_contact_pos_b": {
-                            "object_name": object_body_name,
+                            "object_name": contact_object_body_name,
                             "contact_target_pos_offset": [[0.0, 1.0, 0.0]],
                             "yaw_only": True,
                         },
@@ -367,6 +715,23 @@ def test_mujoco_playback_parity_cli_fails_metric_threshold_gate(tmp_path, capsys
     ]
 
 
+def test_mujoco_playback_parity_threshold_gate_fails_nonfinite_metrics():
+    script = _load_cli_module()
+    args = script._parse_args(["--min-reward-mean", "0.0"])
+    summary = {"reward_mean": float("nan")}
+
+    exit_code = script._apply_threshold_gate(summary, args)
+
+    assert exit_code == 1
+    assert summary["parity_passed"] is False
+    assert len(summary["threshold_failures"]) == 1
+    failure = summary["threshold_failures"][0]
+    assert failure["metric"] == "reward_mean"
+    assert failure["limit"] == 0.0
+    assert math.isnan(failure["actual"])
+    assert failure["comparison"] == ">="
+
+
 def test_mujoco_playback_parity_cli_loads_task_yaml_reward(tmp_path, capsys):
     object_body_name, object_joint_name = _write_motion_dir(tmp_path)
     cfg_dir = tmp_path / "cfg/task"
@@ -540,6 +905,56 @@ reward:
     assert summary["object_joint_name"] == object_joint_name
     assert summary["q_l2_max"] < 1e-5
     assert summary["body_pos_l2_max"] < 1e-5
+
+
+def test_mujoco_playback_parity_cli_aliases_policy_contact_body_to_reference_motion_name(tmp_path, capsys):
+    motion_dir = tmp_path / "data/motion/test_door"
+    reference_object_body_name, object_joint_name = _write_motion_dir(motion_dir)
+    meta = json.loads((motion_dir / "meta.json").read_text())
+    policy_path = _write_object_policy_bundle(
+        tmp_path,
+        reference_object_body_name,
+        contact_object_body_name="door_panel",
+    )
+    policy_cfg_path = policy_path.with_suffix(".yaml")
+    policy_cfg = yaml.safe_load(policy_cfg_path.read_text())
+    policy_cfg["policy_joint_names"] = meta["joint_names"]
+    policy_cfg_path.write_text(yaml.safe_dump(policy_cfg))
+    task_yaml = tmp_path / "cfg/task/G1/hdmi/door.yaml"
+    task_yaml.parent.mkdir(parents=True)
+    task_yaml.write_text(
+        f"""
+command:
+  data_path: data/motion/test_door
+  root_body_name: pelvis
+  object_asset_name: door
+  object_body_name: door_panel
+  object_joint_name: {object_joint_name}
+reward:
+  object_tracking:
+    object_joint_pos_tracking: {{weight: 1.0, sigma: 0.25}}
+""".strip()
+    )
+    script = _load_cli_module()
+
+    exit_code = script.main(
+        [
+            "--task-yaml",
+            str(task_yaml),
+            "--policy-path",
+            str(policy_path),
+            "--require-reference-observation",
+            "--steps",
+            "0,1",
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["task_object_body_name"] == "door_panel"
+    assert summary["reference_object_body_name"] == reference_object_body_name
+    assert summary["policy_action_shape"] == [2, 1, 2]
+    assert summary["policy_requirements_passed"] is True
 
 
 def test_mujoco_playback_parity_cli_uses_task_yaml_contact_reward(tmp_path, capsys):
@@ -828,6 +1243,143 @@ def test_mujoco_playback_parity_cli_reports_closed_loop_policy_rollout(tmp_path,
     assert summary["policy_rollout_reward_mean"] == 1.0
     assert summary["policy_rollout_reward_min"] == 1.0
     assert summary["policy_rollout_reward_max"] == 1.0
+
+
+def test_mujoco_playback_parity_cli_uses_task_sim_decimation_for_policy_rollout(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    object_body_name, object_joint_name = _write_motion_dir(tmp_path)
+    joint_name = json.loads((tmp_path / "meta.json").read_text())["joint_names"][0]
+    policy_path = _write_rollout_policy_bundle(tmp_path, joint_name)
+    task_yaml = tmp_path / "cfg/task/G1/hdmi/door.yaml"
+    task_yaml.parent.mkdir(parents=True)
+    task_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "sim": {
+                    "step_dt": 0.02,
+                    "mujoco_physics_dt": 0.002,
+                },
+                "command": {},
+            }
+        )
+    )
+    script = _load_cli_module()
+    captured = {}
+
+    def fake_policy_rollout(**kwargs):
+        captured["decimation"] = kwargs.get("decimation")
+        steps = 2
+        envs = kwargs["scene"].num_envs
+        return script.MujocoPolicyRolloutMetrics(
+            q_l2=torch.zeros(steps, envs),
+            body_pos_l2=torch.zeros(steps, envs),
+            actions=torch.zeros(steps, envs, 1),
+            joint_position_targets=torch.zeros(steps, envs, 1),
+            action_rate_l2=torch.zeros(steps, envs, 1),
+            reward=torch.ones(steps, envs, 1),
+            reward_terms=None,
+        )
+
+    monkeypatch.setattr(script, "run_mujoco_policy_rollout", fake_policy_rollout)
+
+    exit_code = script.main(
+        [
+            "--motion-dir",
+            str(tmp_path),
+            "--task-yaml",
+            str(task_yaml),
+            "--object-name",
+            "door",
+            "--object-body-name",
+            object_body_name,
+            "--object-joint-name",
+            object_joint_name,
+            "--policy-path",
+            str(policy_path),
+            "--policy-rollout",
+            "--steps",
+            "0,1",
+        ]
+    )
+
+    assert exit_code == 0
+    json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert captured["decimation"] == 10
+
+
+def test_mujoco_playback_parity_cli_uses_task_action_adapter_config_for_policy_rollout(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    object_body_name, object_joint_name = _write_motion_dir(tmp_path)
+    joint_name = json.loads((tmp_path / "meta.json").read_text())["joint_names"][0]
+    policy_path = _write_rollout_policy_bundle(tmp_path, joint_name)
+    task_yaml = tmp_path / "cfg/task/G1/hdmi/door.yaml"
+    task_yaml.parent.mkdir(parents=True)
+    task_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "sim": {
+                    "step_dt": 0.02,
+                    "mujoco_physics_dt": 0.002,
+                },
+                "action": {
+                    "min_delay": 2,
+                    "max_delay": 6,
+                    "alpha": [0.8, 1.0],
+                },
+                "command": {},
+            }
+        )
+    )
+    script = _load_cli_module()
+    captured = {}
+
+    def fake_policy_rollout(**kwargs):
+        captured["action_adapter_config"] = kwargs.get("action_adapter_config")
+        steps = 2
+        envs = kwargs["scene"].num_envs
+        return script.MujocoPolicyRolloutMetrics(
+            q_l2=torch.zeros(steps, envs),
+            body_pos_l2=torch.zeros(steps, envs),
+            actions=torch.zeros(steps, envs, 1),
+            joint_position_targets=torch.zeros(steps, envs, 1),
+            action_rate_l2=torch.zeros(steps, envs, 1),
+            reward=torch.ones(steps, envs, 1),
+            reward_terms=None,
+        )
+
+    monkeypatch.setattr(script, "run_mujoco_policy_rollout", fake_policy_rollout)
+
+    exit_code = script.main(
+        [
+            "--motion-dir",
+            str(tmp_path),
+            "--task-yaml",
+            str(task_yaml),
+            "--object-name",
+            "door",
+            "--object-body-name",
+            object_body_name,
+            "--object-joint-name",
+            object_joint_name,
+            "--policy-path",
+            str(policy_path),
+            "--policy-rollout",
+            "--steps",
+            "0,1",
+        ]
+    )
+
+    assert exit_code == 0
+    json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    action_adapter_config = captured["action_adapter_config"]
+    assert action_adapter_config.delay == 4
+    assert action_adapter_config.alpha == 0.9
 
 
 def test_mujoco_playback_parity_cli_requires_reference_observation_for_policy_parity(tmp_path, capsys):

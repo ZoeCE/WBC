@@ -1,6 +1,7 @@
 import argparse
 import contextlib
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -23,6 +24,7 @@ from active_adaptation.mujoco import (
     compute_kinematic_motion_playback_parity,
     run_mujoco_policy_rollout,
 )
+from active_adaptation.mujoco.policy_rollout import MujocoActionAdapterConfig
 from active_adaptation.mujoco.task_mapping import (
     validate_policy_task_motion_mapping,
     validate_task_motion_mapping,
@@ -91,6 +93,10 @@ def run_parity(
     policy_path: str | Path | None = None,
     policy_rollout: bool = False,
     trace_json_path: str | Path | None = None,
+    policy_reference_body_aliases: Mapping[str, str] | None = None,
+    policy_decimation: int = 1,
+    action_adapter_config: MujocoActionAdapterConfig | None = None,
+    policy_config_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if policy_rollout and policy_path is None:
         raise ValueError("--policy-rollout requires --policy-path.")
@@ -137,7 +143,10 @@ def run_parity(
     summary.update(
         {
             "motion_dir": str(motion_dir),
+            "robot_name": robot_name,
+            "scene_mjcf_path": str(getattr(scene, "_wbc_scene_robot_mjcf_path", "")),
             "object_name": object_name,
+            "object_type": object_type,
             "object_body_name": object_body_name,
             "object_joint_name": object_joint_name,
             "root_body_name": root_body_name,
@@ -161,6 +170,8 @@ def run_parity(
                 reference=policy_reference,
                 steps=steps,
                 num_envs=num_envs,
+                reference_body_aliases=policy_reference_body_aliases,
+                policy_config_overrides=policy_config_overrides,
             )
         )
     if policy_rollout:
@@ -173,9 +184,14 @@ def run_parity(
         )
         policy_rollout_metrics = run_mujoco_policy_rollout(
             scene=scene,
-            policy_bundle=MujocoPolicyBundle.load(policy_path),
+            policy_bundle=MujocoPolicyBundle.load(
+                policy_path,
+                policy_config_overrides=policy_config_overrides,
+            ),
             reference=policy_reference,
             steps=steps,
+            decimation=policy_decimation,
+            action_adapter_config=action_adapter_config,
             reward_cfg=reward_config,
             object_name=object_name,
             object_body_name=object_body_name,
@@ -185,6 +201,9 @@ def run_parity(
             contact_eef_pos_offset=contact_eef_pos_offset,
         )
         summary.update(summarize_policy_rollout_metrics(policy_rollout_metrics))
+        if action_adapter_config is not None:
+            summary["policy_rollout_action_delay"] = int(action_adapter_config.delay)
+            summary["policy_rollout_action_alpha"] = float(action_adapter_config.alpha)
     if trace_json_path is not None:
         write_trace_json(
             trace_json_path,
@@ -309,15 +328,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     exit_code = 0
     with contextlib.redirect_stdout(sys.stderr):
         task_cfg = _load_task_config_from_args(args)
-        playback_inputs = _resolve_playback_inputs(args, task_cfg)
+        robot_name = _resolve_robot_name_from_task_cfg(args.robot_name, task_cfg)
+        playback_inputs = _resolve_playback_inputs(args, task_cfg, robot_name=robot_name)
         contact_inputs = _resolve_contact_inputs(args, task_cfg)
-        mapping_report = _task_mapping_report_from_args(args, task_cfg)
+        mapping_report = _task_mapping_report_from_args(
+            args,
+            task_cfg,
+            robot_name=robot_name,
+            object_type=playback_inputs["object_type"],
+        )
         reward_config = _load_reward_config_from_args(args, task_cfg)
         summary = run_parity(
             motion_dir=playback_inputs["motion_dir"],
-            robot_name=args.robot_name,
+            robot_name=robot_name,
             object_name=playback_inputs["object_name"],
-            object_type=args.object_type,
+            object_type=playback_inputs["object_type"],
             object_body_name=playback_inputs["object_body_name"],
             object_joint_name=playback_inputs["object_joint_name"],
             root_body_name=playback_inputs["root_body_name"],
@@ -330,6 +355,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             policy_path=args.policy_path,
             policy_rollout=args.policy_rollout,
             trace_json_path=args.trace_json,
+            policy_reference_body_aliases=_policy_reference_body_aliases(mapping_report),
+            policy_decimation=_policy_decimation_from_task_cfg(task_cfg),
+            action_adapter_config=_policy_action_adapter_config_from_task_cfg(task_cfg),
+            policy_config_overrides=_policy_config_overrides_from_task_cfg(task_cfg),
         )
         if mapping_report is not None:
             summary.update(_task_mapping_summary(mapping_report))
@@ -349,7 +378,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=None,
         help="Directory containing motion.npz and meta.json. Defaults to task YAML command.data_path.",
     )
-    parser.add_argument("--robot-name", default="g1_29dof")
+    parser.add_argument(
+        "--robot-name",
+        default=None,
+        help="MuJoCo robot registry key. Defaults to task.robot.robot_type when --task-yaml is provided.",
+    )
     parser.add_argument("--object-name", default=None)
     parser.add_argument("--object-type", default=None)
     parser.add_argument("--object-body-name", default=None)
@@ -488,6 +521,8 @@ def _threshold_passes(actual: Any, limit: float, comparison: str) -> bool:
     if actual is None:
         return False
     actual_value = float(actual)
+    if not math.isfinite(actual_value):
+        return False
     if comparison == "<=":
         return actual_value <= limit
     if comparison == ">=":
@@ -604,6 +639,8 @@ def _load_task_config_from_args(args: argparse.Namespace) -> dict[str, Any] | No
 def _resolve_playback_inputs(
     args: argparse.Namespace,
     task_cfg: Mapping[str, Any] | None,
+    *,
+    robot_name: str,
 ) -> dict[str, Any]:
     command_cfg = _task_command_config(task_cfg, args.task_yaml) if task_cfg is not None else {}
     motion_dir = args.motion_dir
@@ -616,6 +653,7 @@ def _resolve_playback_inputs(
     return {
         "motion_dir": motion_dir,
         "object_name": args.object_name or command_cfg.get("object_asset_name"),
+        "object_type": _resolve_object_type_from_task_cfg(args.object_type, command_cfg, robot_name=robot_name),
         "object_body_name": args.object_body_name or command_cfg.get("object_body_name"),
         "object_joint_name": args.object_joint_name or command_cfg.get("object_joint_name"),
         "root_body_name": args.root_body_name or command_cfg.get("root_body_name"),
@@ -625,6 +663,9 @@ def _resolve_playback_inputs(
 def _task_mapping_report_from_args(
     args: argparse.Namespace,
     task_cfg: Mapping[str, Any] | None,
+    *,
+    robot_name: str,
+    object_type: str | None,
 ):
     if task_cfg is None:
         return None
@@ -647,9 +688,10 @@ def _task_mapping_report_from_args(
         return validate_policy_task_motion_mapping(
             _policy_config_path(args.policy_path),
             args.task_yaml,
-            robot_name=args.robot_name,
+            robot_name=robot_name,
+            object_type=object_type,
         )
-    return validate_task_motion_mapping(args.task_yaml, robot_name=args.robot_name)
+    return validate_task_motion_mapping(args.task_yaml, robot_name=robot_name, object_type=object_type)
 
 
 def _task_mapping_summary(mapping_report) -> dict[str, Any]:
@@ -676,6 +718,17 @@ def _task_mapping_summary(mapping_report) -> dict[str, Any]:
             }
         )
     return summary
+
+
+def _policy_reference_body_aliases(mapping_report) -> dict[str, str]:
+    if mapping_report is None:
+        return {}
+    task_report = getattr(mapping_report, "task_report", mapping_report)
+    task_body_name = task_report.task_object_body_name
+    reference_body_name = task_report.reference_object_body_name
+    if task_body_name == reference_body_name:
+        return {}
+    return {task_body_name: reference_body_name}
 
 
 def _resolve_contact_inputs(
@@ -741,6 +794,154 @@ def _load_reward_config_from_args(
     return None
 
 
+def _policy_decimation_from_task_cfg(task_cfg: Mapping[str, Any] | None) -> int:
+    if task_cfg is None:
+        return 1
+    sim_cfg = task_cfg.get("sim", {})
+    if not isinstance(sim_cfg, Mapping):
+        return 1
+    step_dt = sim_cfg.get("step_dt")
+    physics_dt = sim_cfg.get("mujoco_physics_dt")
+    if step_dt is None or physics_dt is None:
+        return 1
+    step_dt_f = float(step_dt)
+    physics_dt_f = float(physics_dt)
+    if not math.isfinite(step_dt_f) or not math.isfinite(physics_dt_f) or physics_dt_f <= 0.0:
+        raise ValueError(f"Invalid MuJoCo rollout dt config: step_dt={step_dt!r}, mujoco_physics_dt={physics_dt!r}.")
+    ratio = step_dt_f / physics_dt_f
+    decimation = int(round(ratio))
+    if decimation < 1 or not math.isclose(ratio, decimation, rel_tol=1e-6, abs_tol=1e-6):
+        raise ValueError(f"MuJoCo rollout decimation must be an integer, got step_dt / mujoco_physics_dt = {ratio}.")
+    return decimation
+
+
+def _policy_action_adapter_config_from_task_cfg(
+    task_cfg: Mapping[str, Any] | None,
+) -> MujocoActionAdapterConfig | None:
+    if task_cfg is None:
+        return None
+    action_cfg = task_cfg.get("action", {})
+    if not isinstance(action_cfg, Mapping):
+        return None
+    min_delay = int(action_cfg.get("min_delay", 0) or 0)
+    max_delay = int(action_cfg.get("max_delay", min_delay) or min_delay)
+    delay = int(round((min_delay + max_delay) / 2.0))
+    alpha = _nominal_action_alpha(action_cfg.get("alpha", 1.0))
+    return MujocoActionAdapterConfig(delay=delay, alpha=alpha)
+
+
+def _nominal_action_alpha(alpha_spec: Any) -> float:
+    if isinstance(alpha_spec, (int, float)):
+        return float(alpha_spec)
+    if isinstance(alpha_spec, Sequence) and not isinstance(alpha_spec, (str, bytes)):
+        values = [float(value) for value in alpha_spec]
+        if not values:
+            raise ValueError("action.alpha sequence must not be empty.")
+        return sum(values) / len(values)
+    raise TypeError(f"action.alpha must be a scalar or sequence, got {type(alpha_spec).__name__}.")
+
+
+def _policy_config_overrides_from_task_cfg(
+    task_cfg: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if task_cfg is None:
+        return None
+    robot_cfg = task_cfg.get("robot", {})
+    if not isinstance(robot_cfg, Mapping):
+        return None
+    override_params = robot_cfg.get("override_params")
+    if not isinstance(override_params, Mapping):
+        return None
+
+    overrides: dict[str, Any] = {}
+    init_state = override_params.get("init_state")
+    if isinstance(init_state, Mapping):
+        joint_pos = init_state.get("joint_pos")
+        if isinstance(joint_pos, Mapping):
+            overrides["default_joint_pos"] = {str(key): value for key, value in joint_pos.items()}
+
+    actuators = override_params.get("actuators")
+    if isinstance(actuators, Mapping):
+        joint_kp: dict[str, Any] = {}
+        joint_kd: dict[str, Any] = {}
+        for actuator_name, actuator_cfg in actuators.items():
+            if not isinstance(actuator_cfg, Mapping):
+                raise TypeError(f"robot.override_params.actuators.{actuator_name} must be a mapping.")
+            _collect_policy_actuator_overrides(joint_kp, actuator_cfg.get("stiffness"), field_name="stiffness")
+            _collect_policy_actuator_overrides(joint_kd, actuator_cfg.get("damping"), field_name="damping")
+        if joint_kp:
+            overrides["joint_kp"] = joint_kp
+        if joint_kd:
+            overrides["joint_kd"] = joint_kd
+
+    return overrides or None
+
+
+def _collect_policy_actuator_overrides(target: dict[str, Any], value: Any, *, field_name: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, Mapping):
+        raise TypeError(f"Only mapping {field_name} overrides are supported for MuJoCo policy playback.")
+    target.update({str(key): item for key, item in value.items()})
+
+
+def _resolve_robot_name_from_task_cfg(
+    robot_name: str | None,
+    task_cfg: Mapping[str, Any] | None,
+) -> str:
+    if robot_name:
+        return str(robot_name)
+    if task_cfg is None:
+        return "g1_29dof"
+    robot_cfg = task_cfg.get("robot", {})
+    if not isinstance(robot_cfg, Mapping):
+        return "g1_29dof"
+    robot_type = robot_cfg.get("robot_type")
+    if not isinstance(robot_type, str) or not robot_type:
+        return "g1_29dof"
+    return _robot_registry_key_from_task_robot_type(robot_type)
+
+
+def _robot_registry_key_from_task_robot_type(robot_type: str) -> str:
+    if robot_type.startswith("g1_29dof_rubberhand"):
+        return "g1_29dof_rubberhand"
+    if robot_type.startswith("g1_29dof_nohand"):
+        return "g1_29dof_nohand"
+    return robot_type.split("-", 1)[0]
+
+
+def _resolve_object_type_from_task_cfg(
+    object_type: str | None,
+    command_cfg: Mapping[str, Any],
+    *,
+    robot_name: str,
+) -> str | None:
+    if object_type:
+        return str(object_type)
+    configured_object_type = command_cfg.get("object_type")
+    if configured_object_type:
+        return str(configured_object_type)
+    object_name = command_cfg.get("object_asset_name")
+    extra_object_names = _string_sequence(command_cfg.get("extra_object_names", ()))
+    if (
+        robot_name == "g1_29dof_rubberhand"
+        and object_name == "foam"
+        and "stool_support" in extra_object_names
+    ):
+        return "foam_with_support"
+    return None
+
+
+def _string_sequence(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)):
+        return (str(value),)
+    if isinstance(value, Sequence):
+        return tuple(str(item) for item in value)
+    return ()
+
+
 def load_task_config(task_yaml: str | Path) -> dict[str, Any]:
     return _load_task_yaml_with_defaults(Path(task_yaml))
 
@@ -751,8 +952,13 @@ def run_policy_playback_smoke(
     reference: MujocoMotionReference,
     steps: Sequence[int] | None,
     num_envs: int,
+    reference_body_aliases: Mapping[str, str] | None = None,
+    policy_config_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    bundle = MujocoPolicyBundle.load(policy_path)
+    bundle = MujocoPolicyBundle.load(
+        policy_path,
+        policy_config_overrides=policy_config_overrides,
+    )
     observation_summary = _policy_observation_summary(bundle)
     steps_t = _normalize_policy_steps(steps, reference.num_steps)
     action_history = torch.zeros(num_envs, bundle.action_dim, _policy_action_history_steps(bundle))
@@ -770,6 +976,7 @@ def run_policy_playback_smoke(
             joint_pos=default_joint_pos,
             applied_action=applied_action,
             action_history=action_history,
+            reference_body_aliases=reference_body_aliases,
         )
         if index == 0:
             bundle.reset(state)
@@ -796,6 +1003,7 @@ def run_policy_playback_smoke(
         "policy_reference_joint_names": list(reference.requested_joint_names),
         "policy_reference_root_body_name": reference.root_body_name,
         "policy_reference_future_steps": [int(step) for step in reference.future_steps.tolist()],
+        "policy_reference_body_aliases": dict(reference_body_aliases or {}),
         "policy_joint_target_shape": list(targets_t.shape),
         "policy_action_mean": float(actions_t.mean().item()),
         "policy_action_max_abs": float(actions_t.abs().max().item()),
@@ -843,6 +1051,7 @@ def _policy_state_from_reference(
     joint_pos: torch.Tensor,
     applied_action: torch.Tensor,
     action_history: torch.Tensor,
+    reference_body_aliases: Mapping[str, str] | None = None,
 ) -> MujocoPolicyState:
     fields = reference.observation_fields_at(torch.full((num_envs,), step, dtype=torch.long))
     zeros_ang_vel = torch.zeros(num_envs, 3, dtype=joint_pos.dtype)
@@ -854,6 +1063,7 @@ def _policy_state_from_reference(
         step=step,
         num_envs=num_envs,
         dtype=joint_pos.dtype,
+        reference_body_aliases=reference_body_aliases,
     )
     return MujocoPolicyState(
         root_ang_vel_b=zeros_ang_vel,
@@ -896,6 +1106,7 @@ def _policy_object_state_from_reference(
     step: int,
     num_envs: int,
     dtype: torch.dtype,
+    reference_body_aliases: Mapping[str, str] | None = None,
 ) -> dict[str, torch.Tensor]:
     object_name = _first_policy_observation_object_name(bundle, _OBJECT_POSE_OBS_KEYS)
     contact_cfg = _first_policy_observation_cfg(bundle, "ref_contact_pos_b")
@@ -910,6 +1121,7 @@ def _policy_object_state_from_reference(
             step=step,
             num_envs=num_envs,
             dtype=dtype,
+            reference_body_aliases=reference_body_aliases,
         )
         state["object_pos_w"] = object_pos_w
         state["object_quat_w"] = object_quat_w
@@ -924,6 +1136,7 @@ def _policy_object_state_from_reference(
             step=step,
             num_envs=num_envs,
             dtype=dtype,
+            reference_body_aliases=reference_body_aliases,
         )
         offsets = torch.as_tensor(
             contact_cfg.get("contact_target_pos_offset", [[0.0, 0.0, 0.0]]),
@@ -970,10 +1183,17 @@ def _reference_body_pose(
     step: int,
     num_envs: int,
     dtype: torch.dtype,
+    reference_body_aliases: Mapping[str, str] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    if body_name not in reference.body_names:
-        raise ValueError(f"Policy observation body {body_name!r} is missing from motion metadata.")
-    body_index = reference.body_names.index(body_name)
+    resolved_body_name = (reference_body_aliases or {}).get(body_name, body_name)
+    if resolved_body_name not in reference.body_names:
+        if resolved_body_name == body_name:
+            raise ValueError(f"Policy observation body {body_name!r} is missing from motion metadata.")
+        raise ValueError(
+            f"Policy observation body {body_name!r} resolved to {resolved_body_name!r}, "
+            "which is missing from motion metadata."
+        )
+    body_index = reference.body_names.index(resolved_body_name)
     body_pos_w = reference.body_pos_w[step, body_index].to(dtype=dtype).unsqueeze(0).expand(num_envs, -1)
     body_quat_w = reference.body_quat_w[step, body_index].to(dtype=dtype).unsqueeze(0).expand(num_envs, -1)
     return body_pos_w, body_quat_w
@@ -1121,14 +1341,21 @@ def _build_scene(
         pass
 
     if object_name is None:
-        SceneCfg.robot = ROBOTS[robot_name]
+        robot_cfg = ROBOTS[robot_name]
+        SceneCfg.robot = robot_cfg
     else:
-        SceneCfg.robot = ROBOTS.with_object(
+        robot_cfg = ROBOTS.with_object(
             robot_name,
             object_asset_name=object_name,
             object_type=object_type,
         )
+        SceneCfg.robot = robot_cfg
         if object_body_name is not None:
+            contact_filter_body_name = _contact_filter_body_name(
+                robot_cfg,
+                object_name=object_name,
+                object_body_name=object_body_name,
+            )
             for eef_body_name in _contact_eef_body_name_list(contact_eef_body_names):
                 contact_sensor_name = f"{eef_body_name}_{object_name}_contact_forces"
                 setattr(
@@ -1137,11 +1364,29 @@ def _build_scene(
                     mujoco_env.MJContactSensorCfg(
                         target="robot",
                         body_names=[eef_body_name],
-                        filter_body_names=[object_body_name],
+                        filter_body_names=[contact_filter_body_name],
                     ),
                 )
     SceneCfg.contact_forces = "robot"
-    return mujoco_env.MJScene(SceneCfg(), num_envs=num_envs, launch_viewer=False)
+    scene = mujoco_env.MJScene(SceneCfg(), num_envs=num_envs, launch_viewer=False)
+    scene._wbc_scene_robot_mjcf_path = robot_cfg.mjcf_path
+    return scene
+
+
+def _contact_filter_body_name(
+    robot_cfg,
+    *,
+    object_name: str,
+    object_body_name: str,
+) -> str:
+    object_spec = robot_cfg.object_specs.get(object_name)
+    if object_spec is None:
+        return object_body_name
+    if object_body_name in object_spec.body_names:
+        return object_body_name
+    if object_body_name == object_spec.asset_name and len(object_spec.body_names) == 1:
+        return str(object_spec.body_names[0])
+    return object_body_name
 
 
 def _contact_eef_body_name_list(value: Sequence[str] | None) -> list[str]:

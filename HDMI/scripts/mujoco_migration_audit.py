@@ -69,6 +69,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         require_playback_parity=args.require_playback_parity,
         component_reports=[Path(path) for path in args.component_report],
         require_component_reports=args.require_component_reports,
+        closed_loop_success_reports=[Path(path) for path in args.closed_loop_success_report],
+        require_closed_loop_success=args.require_closed_loop_success,
+        source_reference_reports=[Path(path) for path in args.source_reference_report],
+        require_source_reference=args.require_source_reference,
     )
     print(json.dumps(report, sort_keys=True))
     return 0 if report["migration_passed"] else 1
@@ -99,6 +103,10 @@ def build_migration_audit(
     require_playback_parity: bool = False,
     component_reports: Sequence[Path] = (),
     require_component_reports: bool = False,
+    closed_loop_success_reports: Sequence[Path] = (),
+    require_closed_loop_success: bool = False,
+    source_reference_reports: Sequence[Path] = (),
+    require_source_reference: bool = False,
 ) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
 
@@ -208,6 +216,36 @@ def build_migration_audit(
             }
         )
 
+    closed_loop_success_required = require_closed_loop_success or bool(closed_loop_success_reports)
+    closed_loop_success = _build_json_report_gate(
+        report_paths=closed_loop_success_reports,
+        pass_key="closed_loop_success_gate_passed",
+        require_reports=require_closed_loop_success,
+    )
+    if closed_loop_success_required and not closed_loop_success["gate_passed"]:
+        failures.append(
+            {
+                "component": "closed_loop_success",
+                "reason": "closed_loop_success_gate_failed",
+                "failures": closed_loop_success.get("failures", []),
+            }
+        )
+
+    source_reference_required = require_source_reference or bool(source_reference_reports)
+    source_reference = _build_json_report_gate(
+        report_paths=source_reference_reports,
+        pass_key="gate_passed",
+        require_reports=require_source_reference,
+    )
+    if source_reference_required and not source_reference["gate_passed"]:
+        failures.append(
+            {
+                "component": "source_reference",
+                "reason": "source_reference_gate_failed",
+                "failures": source_reference.get("failures", []),
+            }
+        )
+
     return {
         "migration_passed": not failures,
         "failures": failures,
@@ -217,6 +255,8 @@ def build_migration_audit(
         "policy_export": policy_export,
         "playback_parity": playback_parity,
         "component_reports": component_report,
+        "closed_loop_success": closed_loop_success,
+        "source_reference": source_reference,
     }
 
 
@@ -580,6 +620,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--require-playback-parity", action="store_true")
     parser.add_argument("--component-report", action="append", default=[], metavar="PATH")
     parser.add_argument("--require-component-reports", action="store_true")
+    parser.add_argument("--closed-loop-success-report", action="append", default=[], metavar="PATH")
+    parser.add_argument("--require-closed-loop-success", action="store_true")
+    parser.add_argument("--source-reference-report", action="append", default=[], metavar="PATH")
+    parser.add_argument("--require-source-reference", action="store_true")
     return parser.parse_args(argv)
 
 

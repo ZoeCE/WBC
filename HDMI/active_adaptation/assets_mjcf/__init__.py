@@ -7,6 +7,7 @@ from active_adaptation.assets_mjcf.types import MJArticulationCfg, MJObjectSpec
 
 
 PATH = os.path.dirname(__file__)
+_SIM2REAL_ROOT_ENV_VARS = ("HDMI_SIM2REAL_ROOT", "SIM2REAL_HDMI_ROOT")
 
 
 class RobotRegistry(dict):
@@ -99,7 +100,21 @@ class RobotRegistry(dict):
             spatial_symmetry_mapping={},
         )
         self["g1_29dof"] = g1_29dof
+        self["g1_29dof_nohand"] = g1_29dof
         self["g1"] = g1_29dof
+
+        rubberhand_dir = _find_sim2real_robot_dir()
+        if rubberhand_dir is not None:
+            rubberhand_path = os.path.join(rubberhand_dir, "g1_29dof_rubberhand.xml")
+            rubberhand_manifest = load_mujoco_asset_manifest(rubberhand_path)
+            rubberhand = replace(
+                g1_29dof,
+                mjcf_path=rubberhand_path,
+                body_names_isaac=rubberhand_manifest.body_names,
+                joint_names_isaac=rubberhand_manifest.actuated_joint_names,
+            )
+            self["g1_29dof_rubberhand"] = rubberhand
+            self["g1_rubberhand"] = rubberhand
         self._loaded = True
 
     def with_object(self, robot_name: str, object_asset_name: str, object_type: str | None = None):
@@ -112,9 +127,12 @@ class RobotRegistry(dict):
         base_cfg = super().__getitem__(robot_name)
         from active_adaptation.assets_mjcf.manifest import load_mujoco_asset_manifest
 
-        mjcf_path = os.path.join(PATH, "g1_29dof_nohand", f"g1_29dof_nohand-{object_type}.xml")
+        base_mjcf_dir = os.path.dirname(str(base_cfg.mjcf_path))
+        base_mjcf_stem = os.path.splitext(os.path.basename(str(base_cfg.mjcf_path)))[0]
+        mjcf_path = os.path.join(base_mjcf_dir, f"{base_mjcf_stem}-{object_type}.xml")
         if not os.path.exists(mjcf_path):
             raise KeyError(f"No MuJoCo object scene for {robot_name=} and {object_type=}: {mjcf_path}")
+        mjcf_path = _compat_mjcf_path(mjcf_path)
 
         base_manifest = load_mujoco_asset_manifest(base_cfg.mjcf_path)
         model = mujoco.MjModel.from_xml_path(mjcf_path)
@@ -140,6 +158,88 @@ class RobotRegistry(dict):
     def keys(self):
         self._ensure_loaded()
         return super().keys()
+
+
+def _find_sim2real_robot_dir() -> str | None:
+    for env_var in _SIM2REAL_ROOT_ENV_VARS:
+        root = os.environ.get(env_var)
+        if root:
+            return _require_sim2real_robot_dir(root, env_var=env_var)
+
+    candidates = [
+        os.path.join(os.path.expanduser("~"), "Workspace", "sim2real-hdmi"),
+        os.path.join(os.path.expanduser("~"), "Workspace", "sim2real"),
+        os.path.abspath(os.path.join(PATH, "..", "..", "..", "sim2real-hdmi")),
+    ]
+    for root in candidates:
+        robot_dir = os.path.join(root, "data", "robots", "g1")
+        if os.path.isfile(os.path.join(robot_dir, "g1_29dof_rubberhand.xml")):
+            return robot_dir
+    return None
+
+
+def _require_sim2real_robot_dir(root: str, *, env_var: str) -> str:
+    robot_dir = os.path.join(root, "data", "robots", "g1")
+    robot_xml = os.path.join(robot_dir, "g1_29dof_rubberhand.xml")
+    if not os.path.isfile(robot_xml):
+        raise FileNotFoundError(
+            f"{env_var}={root!r} does not contain HDMI sim2real robot XML at {robot_xml!r}."
+        )
+    return robot_dir
+
+
+def _compat_mjcf_path(mjcf_path: str) -> str:
+    if os.path.basename(mjcf_path) != "g1_29dof_rubberhand-bread_box.xml":
+        return mjcf_path
+
+    missing_include = os.path.normpath(
+        os.path.join(os.path.dirname(mjcf_path), "..", "..", "objects", "bread_box", "bread_box_with_support.xml")
+    )
+    if os.path.exists(missing_include):
+        return mjcf_path
+
+    local_includes = [
+        os.path.join(PATH, "objects", "bread_box", "bread_box.xml"),
+        os.path.join(PATH, "objects", "support", "support0.xml"),
+        os.path.join(PATH, "objects", "support", "support1.xml"),
+    ]
+    missing_local = [path for path in local_includes if not os.path.isfile(path)]
+    if missing_local:
+        raise FileNotFoundError(f"Missing local BreadBox compatibility includes: {missing_local}")
+
+    cache_dir = os.path.join(os.environ.get("TMPDIR", "/tmp"), "wbc_hdmi_mujoco_asset_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    compat_path = os.path.join(cache_dir, "g1_29dof_rubberhand-bread_box.xml")
+
+    source = _read_text(mjcf_path)
+    mesh_dir = os.path.join(os.path.dirname(mjcf_path), "meshes")
+    source = _replace_once(
+        source,
+        'meshdir="meshes"',
+        f'meshdir="{mesh_dir}"',
+        label=f"{mjcf_path} compiler meshdir",
+    )
+    replacement = "\n".join(f'  <include file="{path}"/>' for path in local_includes)
+    source = _replace_once(
+        source,
+        '  <include file="../../objects/bread_box/bread_box_with_support.xml"/>',
+        replacement,
+        label=f"{mjcf_path} BreadBox include",
+    )
+    with open(compat_path, "w", encoding="utf-8") as file:
+        file.write(source)
+    return compat_path
+
+
+def _read_text(path: str) -> str:
+    with open(path, encoding="utf-8") as file:
+        return file.read()
+
+
+def _replace_once(text: str, old: str, new: str, *, label: str) -> str:
+    if old not in text:
+        raise ValueError(f"Could not find {label}: {old!r}")
+    return text.replace(old, new, 1)
 
 
 def _build_object_specs(model, robot_body_names, robot_joint_names):
@@ -169,13 +269,20 @@ def _build_object_specs(model, robot_body_names, robot_joint_names):
             if int(model.jnt_bodyid[joint_id]) in subtree_id_set:
                 joint_names.append(joint_name)
 
-        specs[body_name] = MJObjectSpec(
-            asset_name=body_name,
+        asset_name = _object_asset_name_from_body_name(body_name)
+        specs[asset_name] = MJObjectSpec(
+            asset_name=asset_name,
             body_names=body_names,
             joint_names=tuple(joint_names),
         )
 
     return specs
+
+
+def _object_asset_name_from_body_name(body_name: str) -> str:
+    if body_name.endswith("_body") and len(body_name) > len("_body"):
+        return body_name[:-len("_body")]
+    return body_name
 
 
 def _body_subtree_ids(model, root_body_id: int):

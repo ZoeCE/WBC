@@ -1,5 +1,6 @@
 from collections import OrderedDict
 from dataclasses import dataclass
+import re
 from typing import Mapping, Sequence
 
 import torch
@@ -10,13 +11,31 @@ class MujocoPolicyState:
     root_ang_vel_b: torch.Tensor
     projected_gravity_b: torch.Tensor
     joint_pos: torch.Tensor
+    root_lin_vel_b: torch.Tensor | None = None
+    joint_names: Sequence[str] | None = None
     joint_pos_offset: torch.Tensor | None = None
     applied_action: torch.Tensor | None = None
+    applied_torque: torch.Tensor | None = None
     action_history: torch.Tensor | None = None
+    body_names: Sequence[str] | None = None
+    body_pos_w: torch.Tensor | None = None
+    body_quat_w: torch.Tensor | None = None
+    body_lin_vel_w: torch.Tensor | None = None
+    body_ang_vel_w: torch.Tensor | None = None
+    tracking_body_pos_w: torch.Tensor | None = None
+    tracking_body_quat_w: torch.Tensor | None = None
+    tracking_body_lin_vel_w: torch.Tensor | None = None
+    tracking_body_ang_vel_w: torch.Tensor | None = None
     ref_body_pos_future_w: torch.Tensor | None = None
+    ref_body_quat_future_w: torch.Tensor | None = None
+    ref_body_lin_vel_future_w: torch.Tensor | None = None
+    ref_body_ang_vel_future_w: torch.Tensor | None = None
     ref_root_pos_w: torch.Tensor | None = None
     ref_root_quat_w: torch.Tensor | None = None
+    ref_root_pos_future_w: torch.Tensor | None = None
+    ref_root_quat_future_w: torch.Tensor | None = None
     ref_joint_pos_future: torch.Tensor | None = None
+    ref_joint_pos_action: torch.Tensor | None = None
     motion_t: torch.Tensor | None = None
     motion_len: torch.Tensor | None = None
     robot_root_pos_w: torch.Tensor | None = None
@@ -25,6 +44,12 @@ class MujocoPolicyState:
     contact_eef_pos_w: torch.Tensor | None = None
     object_pos_w: torch.Tensor | None = None
     object_quat_w: torch.Tensor | None = None
+    object_joint_pos: torch.Tensor | None = None
+    object_joint_vel: torch.Tensor | None = None
+    object_joint_torque: torch.Tensor | None = None
+    ref_object_pos_future_w: torch.Tensor | None = None
+    ref_object_quat_future_w: torch.Tensor | None = None
+    ref_object_contact_future: torch.Tensor | None = None
 
 
 class MujocoObservationBuilder:
@@ -119,8 +144,30 @@ class MujocoObservationBuilder:
         if obs_key == "ref_joint_pos_future":
             ref_joint_pos = _required_tensor(state, "ref_joint_pos_future")
             return ref_joint_pos.reshape(ref_joint_pos.shape[0], -1)
+        if obs_key == "ref_joint_pos_action_policy":
+            return _required_tensor(state, "ref_joint_pos_action")
         if obs_key == "ref_motion_phase":
             return _ref_motion_phase(state)
+        if obs_key == "ref_root_pos_future_b":
+            return _ref_root_pos_future_b(state)
+        if obs_key == "ref_root_ori_future_b":
+            return _ref_root_ori_future_b(state)
+        if obs_key == "diff_body_pos_future_local":
+            return _diff_body_pos_future_local(state)
+        if obs_key == "diff_body_ori_future_local":
+            return _diff_body_ori_future_local(state)
+        if obs_key == "diff_body_lin_vel_future_local":
+            return _diff_body_vel_future_local(state, angular=False)
+        if obs_key == "diff_body_ang_vel_future_local":
+            return _diff_body_vel_future_local(state, angular=True)
+        if obs_key == "root_linvel_b":
+            return _required_tensor(state, "root_lin_vel_b")
+        if obs_key == "body_pos_b":
+            return _body_pos_b(state, params)
+        if obs_key == "body_vel_b":
+            return _body_vel_b(state, params)
+        if obs_key == "body_height":
+            return _body_height(state, params)
         if obs_key == "ref_contact_pos_b":
             return _ref_contact_pos_b(state, yaw_only=bool(params.get("yaw_only", False)))
         if obs_key == "diff_contact_pos_b":
@@ -133,10 +180,24 @@ class MujocoObservationBuilder:
             return _object_pos_b(state)
         if obs_key == "object_ori_b":
             return _object_ori_b(state)
+        if obs_key == "diff_object_pos_future":
+            return _diff_object_pos_future(state)
+        if obs_key == "diff_object_ori_future":
+            return _diff_object_ori_future(state)
+        if obs_key == "ref_object_contact_future":
+            return _ref_object_contact_future(state)
+        if obs_key == "object_joint_pos":
+            return _required_tensor(state, "object_joint_pos")
+        if obs_key == "object_joint_vel":
+            return _required_tensor(state, "object_joint_vel")
+        if obs_key == "object_joint_torque":
+            return _required_tensor(state, "object_joint_torque")
         if obs_key == "prev_actions":
             return self._prev_actions(params, state)
         if obs_key == "applied_action":
             return _applied_action(state, self.action_dim)
+        if obs_key == "applied_torque":
+            return _joint_named_tensor(state, params, "applied_torque")
         raise NotImplementedError(f"Unsupported MuJoCo observation '{obs_key}'.")
 
     def _select_history(self, obs_key: str, params: Mapping) -> torch.Tensor:
@@ -228,6 +289,82 @@ def _ref_body_pos_future_local(state: MujocoPolicyState) -> torch.Tensor:
     return ref_body_pos_future_local.reshape(ref_body_pos_future_local.shape[0], -1)
 
 
+
+def _ref_root_pos_future_b(state: MujocoPolicyState) -> torch.Tensor:
+    ref_root_pos_future_w = _required_tensor(state, "ref_root_pos_future_w")
+    robot_root_pos_w = _required_tensor(state, "robot_root_pos_w")[:, None, :]
+    robot_root_quat_w = _required_tensor(state, "robot_root_quat_w")[:, None, :]
+    ref_root_pos_future_b = _quat_rotate_inverse(robot_root_quat_w, ref_root_pos_future_w - robot_root_pos_w)
+    return ref_root_pos_future_b.reshape(ref_root_pos_future_b.shape[0], -1)
+
+
+def _ref_root_ori_future_b(state: MujocoPolicyState) -> torch.Tensor:
+    ref_root_quat_future_w = _required_tensor(state, "ref_root_quat_future_w")
+    robot_root_quat_w = _required_tensor(state, "robot_root_quat_w")[:, None, :]
+    ref_root_quat_b = _quat_mul(_quat_conjugate(robot_root_quat_w).expand_as(ref_root_quat_future_w), ref_root_quat_future_w)
+    ref_root_ori_b = _matrix_from_quat(ref_root_quat_b)
+    return ref_root_ori_b[:, :, :2, :].reshape(ref_root_ori_b.shape[0], -1)
+
+
+def _diff_body_pos_future_local(state: MujocoPolicyState) -> torch.Tensor:
+    ref_body_pos_future_w = _required_tensor(state, "ref_body_pos_future_w")
+    ref_root_pos_w = _required_tensor(state, "ref_root_pos_w")[:, None, None, :].clone()
+    ref_root_quat_w = _yaw_quat(_required_tensor(state, "ref_root_quat_w"))[:, None, None, :]
+    body_pos_w = _required_tensor(state, "tracking_body_pos_w")[:, None, :, :]
+    robot_root_pos_w = _required_tensor(state, "robot_root_pos_w")[:, None, None, :].clone()
+    robot_root_quat_w = _yaw_quat(_required_tensor(state, "robot_root_quat_w"))[:, None, None, :]
+    ref_root_pos_w[..., 2] = 0.0
+    robot_root_pos_w[..., 2] = 0.0
+    ref_body_local = _quat_rotate_inverse(ref_root_quat_w, ref_body_pos_future_w - ref_root_pos_w)
+    body_local = _quat_rotate_inverse(robot_root_quat_w, body_pos_w - robot_root_pos_w)
+    return (ref_body_local - body_local).reshape(ref_body_local.shape[0], -1)
+
+
+def _diff_body_ori_future_local(state: MujocoPolicyState) -> torch.Tensor:
+    ref_body_quat_future_w = _required_tensor(state, "ref_body_quat_future_w")
+    ref_root_quat_w = _yaw_quat(_required_tensor(state, "ref_root_quat_w"))[:, None, None, :]
+    body_quat_w = _required_tensor(state, "tracking_body_quat_w")[:, None, :, :]
+    robot_root_quat_w = _yaw_quat(_required_tensor(state, "robot_root_quat_w"))[:, None, None, :]
+    ref_body_local = _quat_mul(_quat_conjugate(ref_root_quat_w).expand_as(ref_body_quat_future_w), ref_body_quat_future_w)
+    body_local = _quat_mul(_quat_conjugate(robot_root_quat_w).expand_as(body_quat_w), body_quat_w)
+    diff_quat = _quat_mul(_quat_conjugate(body_local).expand_as(ref_body_local), ref_body_local)
+    diff_ori = _matrix_from_quat(diff_quat)
+    return diff_ori[:, :, :, :2, :].reshape(diff_ori.shape[0], -1)
+
+
+def _diff_body_vel_future_local(state: MujocoPolicyState, *, angular: bool) -> torch.Tensor:
+    ref_attr = "ref_body_ang_vel_future_w" if angular else "ref_body_lin_vel_future_w"
+    body_attr = "tracking_body_ang_vel_w" if angular else "tracking_body_lin_vel_w"
+    ref_body_vel_future_w = _required_tensor(state, ref_attr)
+    body_vel_w = _required_tensor(state, body_attr)[:, None, :, :]
+    ref_root_quat_w = _yaw_quat(_required_tensor(state, "ref_root_quat_w"))[:, None, None, :]
+    robot_root_quat_w = _yaw_quat(_required_tensor(state, "robot_root_quat_w"))[:, None, None, :]
+    ref_body_vel_local = _quat_rotate_inverse(ref_root_quat_w, ref_body_vel_future_w)
+    body_vel_local = _quat_rotate_inverse(robot_root_quat_w, body_vel_w)
+    return (ref_body_vel_local - body_vel_local).reshape(ref_body_vel_local.shape[0], -1)
+
+
+def _body_pos_b(state: MujocoPolicyState, params: Mapping) -> torch.Tensor:
+    body_pos_w = _body_named_tensor(state, params, "body_pos_w")
+    root_pos_w = _required_tensor(state, "robot_root_pos_w")[:, None, :].clone()
+    root_quat_w = _yaw_quat(_required_tensor(state, "robot_root_quat_w"))[:, None, :]
+    root_pos_w[..., 2] = 0.0
+    return _quat_rotate_inverse(root_quat_w, body_pos_w - root_pos_w).reshape(body_pos_w.shape[0], -1)
+
+
+def _body_vel_b(state: MujocoPolicyState, params: Mapping) -> torch.Tensor:
+    body_vel_w = _body_named_tensor(state, params, "body_lin_vel_w")
+    root_quat_w = _required_tensor(state, "robot_root_quat_w")[:, None, :]
+    if bool(params.get("yaw_only", False)):
+        root_quat_w = _yaw_quat(root_quat_w)
+    return _quat_rotate_inverse(root_quat_w, body_vel_w).reshape(body_vel_w.shape[0], -1)
+
+
+def _body_height(state: MujocoPolicyState, params: Mapping) -> torch.Tensor:
+    body_pos_w = _body_named_tensor(state, params, "body_pos_w")
+    return body_pos_w[..., 2].reshape(body_pos_w.shape[0], -1)
+
+
 def _ref_contact_pos_b(state: MujocoPolicyState, yaw_only: bool = False) -> torch.Tensor:
     contact_target_pos_w = _required_tensor(state, "contact_target_pos_w")
     robot_root_pos_w = _required_tensor(state, "robot_root_pos_w")[:, None, :]
@@ -249,6 +386,64 @@ def _diff_contact_pos_b(state: MujocoPolicyState) -> torch.Tensor:
         )
     diff_contact_pos_b = _quat_rotate_inverse(robot_root_quat_w, contact_target_pos_w - contact_eef_pos_w)
     return diff_contact_pos_b.reshape(diff_contact_pos_b.shape[0], -1)
+
+
+
+def _diff_object_pos_future(state: MujocoPolicyState) -> torch.Tensor:
+    ref_object_pos_future_w = _required_tensor(state, "ref_object_pos_future_w")
+    object_pos_w = _required_tensor(state, "object_pos_w")[:, None, :]
+    object_quat_w = _required_tensor(state, "object_quat_w")[:, None, :]
+    diff_object_pos = _quat_rotate_inverse(object_quat_w, ref_object_pos_future_w - object_pos_w)
+    return diff_object_pos.reshape(diff_object_pos.shape[0], -1)
+
+
+def _diff_object_ori_future(state: MujocoPolicyState) -> torch.Tensor:
+    ref_object_quat_future_w = _required_tensor(state, "ref_object_quat_future_w")
+    object_quat_w = _required_tensor(state, "object_quat_w")[:, None, :]
+    diff_object_quat = _quat_mul(_quat_conjugate(object_quat_w).expand_as(ref_object_quat_future_w), ref_object_quat_future_w)
+    diff_object_ori = _matrix_from_quat(diff_object_quat)
+    return diff_object_ori.reshape(diff_object_ori.shape[0], -1)
+
+
+def _ref_object_contact_future(state: MujocoPolicyState) -> torch.Tensor:
+    contact = state.ref_object_contact_future
+    if contact is None:
+        ref_body_pos_future_w = _required_tensor(state, "ref_body_pos_future_w")
+        return torch.zeros(
+            ref_body_pos_future_w.shape[0],
+            ref_body_pos_future_w.shape[1],
+            dtype=ref_body_pos_future_w.dtype,
+            device=ref_body_pos_future_w.device,
+        )
+    return contact.to(dtype=state.joint_pos.dtype).reshape(contact.shape[0], -1)
+
+
+def _body_named_tensor(state: MujocoPolicyState, params: Mapping, attr: str) -> torch.Tensor:
+    values = _required_tensor(state, attr)
+    return values[:, _named_indices(state.body_names, params.get("body_names", ".*"), label="body")]
+
+
+def _joint_named_tensor(state: MujocoPolicyState, params: Mapping, attr: str) -> torch.Tensor:
+    values = _required_tensor(state, attr)
+    return values[:, _named_indices(state.joint_names, params.get("joint_names", ".*"), label="joint")]
+
+
+def _named_indices(names: Sequence[str] | None, selectors: object, *, label: str) -> list[int]:
+    if names is None:
+        raise ValueError(f"MujocoPolicyState.{label}_names is required for named {label} observations.")
+    selector_list = [selectors] if isinstance(selectors, str) else list(selectors)  # type: ignore[arg-type]
+    selected: set[int] = set()
+    for selector in selector_list:
+        selector_s = str(selector)
+        matches = [
+            index
+            for index, name in enumerate(names)
+            if str(name) == selector_s or re.fullmatch(selector_s, str(name))
+        ]
+        if not matches:
+            raise ValueError(f"No {label} names match selector {selector_s!r}.")
+        selected.update(matches)
+    return [index for index in range(len(names)) if index in selected]
 
 
 def _object_xy_b(state: MujocoPolicyState) -> torch.Tensor:

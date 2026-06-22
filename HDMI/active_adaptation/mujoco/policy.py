@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+import copy
 import re
 
 import torch
@@ -40,14 +41,21 @@ class MujocoPolicyBundle:
         config_path: str | Path | None = None,
         *,
         map_location: str | torch.device = "cpu",
+        policy_config_overrides: Mapping[str, Any] | None = None,
     ) -> "MujocoPolicyBundle":
         policy_path = Path(policy_path)
         config_path = Path(config_path) if config_path is not None else _default_config_path(policy_path)
         config = _load_yaml_mapping(config_path)
-        observation_cfg = _required_mapping(config, "observation", config_path)
         policy_joint_names = _required_string_list(config, "policy_joint_names", config_path)
         isaac_joint_names = _optional_string_list(config, "isaac_joint_names") or policy_joint_names
         isaac_body_names = _optional_string_list(config, "isaac_body_names") or []
+        if policy_config_overrides:
+            config = apply_policy_config_overrides(
+                config,
+                policy_config_overrides,
+                joint_names=isaac_joint_names,
+            )
+        observation_cfg = _required_mapping(config, "observation", config_path)
         observation_builder = MujocoObservationBuilder(
             observation_cfg,
             policy_joint_names=policy_joint_names,
@@ -187,6 +195,77 @@ def resolve_named_values(
     if unmatched:
         raise ValueError(f"{field_name} does not define values for policy joints: {unmatched}.")
     return torch.tensor(values, dtype=torch.float32)
+
+
+def apply_policy_config_overrides(
+    config: Mapping[str, Any],
+    overrides: Mapping[str, Any],
+    *,
+    joint_names: Sequence[str],
+) -> dict[str, Any]:
+    merged = copy.deepcopy(dict(config))
+    joint_names = [str(name) for name in joint_names]
+    for field_name in ("default_joint_pos", "joint_kp", "joint_kd"):
+        if field_name not in overrides:
+            continue
+        merged[field_name] = _merge_named_value_overrides(
+            merged.get(field_name, 0.0),
+            overrides[field_name],
+            joint_names,
+            field_name=field_name,
+        )
+    for key, value in overrides.items():
+        if key not in {"default_joint_pos", "joint_kp", "joint_kd"}:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _merge_named_value_overrides(
+    base: Any,
+    overrides: Any,
+    names: Sequence[str],
+    *,
+    field_name: str,
+) -> dict[str, float]:
+    if not isinstance(overrides, Mapping):
+        raise TypeError(f"{field_name} overrides must be a mapping, got {type(overrides).__name__}.")
+    base_values = resolve_named_values(
+        base,
+        names,
+        field_name=field_name,
+        require_all=False,
+        default=0.0,
+    )
+    values = {str(name): float(value) for name, value in zip(names, base_values.tolist(), strict=True)}
+    values.update(_resolve_named_override_values(overrides, names, field_name=field_name))
+    return values
+
+
+def _resolve_named_override_values(
+    overrides: Mapping[str, Any],
+    names: Sequence[str],
+    *,
+    field_name: str,
+) -> dict[str, float]:
+    resolved: dict[str, float] = {}
+    key_matches: dict[str, list[str]] = {str(pattern): [] for pattern in overrides.keys()}
+    for name in names:
+        matches = [
+            (str(pattern), value)
+            for pattern, value in overrides.items()
+            if _matches_name(str(pattern), str(name))
+        ]
+        if len(matches) > 1:
+            patterns = ", ".join(pattern for pattern, _ in matches)
+            raise ValueError(f"{field_name} overrides have multiple matches for joint {name!r}: {patterns}.")
+        if matches:
+            pattern, value = matches[0]
+            resolved[str(name)] = float(value)
+            key_matches[pattern].append(str(name))
+    unmatched = [pattern for pattern, matches in key_matches.items() if not matches]
+    if unmatched:
+        raise ValueError(f"{field_name} override keys did not match any policy joints: {unmatched}.")
+    return resolved
 
 
 def _matches_name(pattern: str, name: str) -> bool:

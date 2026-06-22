@@ -110,10 +110,11 @@ def validate_policy_task_motion_mapping(
     task_yaml: str | Path,
     *,
     robot_name: str = "g1_29dof",
+    object_type: str | None = None,
 ) -> PolicyTaskMotionMappingReport:
     policy_config_path = Path(policy_config_path)
     policy_cfg = _load_yaml_mapping(policy_config_path)
-    task_report = validate_task_motion_mapping(task_yaml, robot_name=robot_name)
+    task_report = validate_task_motion_mapping(task_yaml, robot_name=robot_name, object_type=object_type)
     isaac_body_names = tuple(
         _string_list(policy_cfg.get("isaac_body_names", ()), "isaac_body_names", policy_config_path)
     )
@@ -156,6 +157,7 @@ def validate_task_motion_mapping(
     task_yaml: str | Path,
     *,
     robot_name: str = "g1_29dof",
+    object_type: str | None = None,
 ) -> TaskMotionMappingReport:
     task_path = Path(task_yaml)
     task_cfg = _load_yaml_mapping(task_path)
@@ -164,7 +166,7 @@ def validate_task_motion_mapping(
         raise ValueError(f"{task_path}: command.object_asset_name is required for object mapping validation.")
 
     object_asset_name = str(command_cfg["object_asset_name"])
-    object_type = str(command_cfg.get("object_type") or object_asset_name)
+    object_type = str(object_type or command_cfg.get("object_type") or object_asset_name)
     task_object_body_name = _required_str(command_cfg, "object_body_name", task_path)
     object_joint_name = _optional_str(command_cfg.get("object_joint_name"))
     extra_object_names = tuple(_string_list(command_cfg.get("extra_object_names", ()), "extra_object_names", task_path))
@@ -186,7 +188,11 @@ def validate_task_motion_mapping(
     asset_object_body_names = tuple(object_spec.body_names)
     asset_object_joint_names = tuple(object_spec.joint_names)
 
-    if task_object_body_name not in asset_object_body_names:
+    resolved_task_object_body_name = _resolve_asset_body_alias(
+        task_object_body_name,
+        asset_object_body_names=asset_object_body_names,
+    )
+    if resolved_task_object_body_name not in asset_object_body_names:
         raise ValueError(
             f"{task_path}: command.object_body_name={task_object_body_name!r} is absent from "
             f"{object_asset_name!r} MuJoCo bodies {asset_object_body_names!r}."
@@ -207,7 +213,14 @@ def validate_task_motion_mapping(
         raise ValueError(f"{task_path}: extra_object_names are absent from motion bodies: {missing_extra_motion}.")
 
     manifest = load_mujoco_asset_manifest(robot_cfg.mjcf_path)
-    body_name_indices = build_name_index(motion_body_names, manifest.body_names, label=f"{task_path.name} body")
+    body_name_indices = _build_body_name_index(
+        motion_body_names,
+        manifest.body_names,
+        object_asset_name=object_asset_name,
+        task_object_body_name=task_object_body_name,
+        asset_object_body_names=asset_object_body_names,
+        label=f"{task_path.name} body",
+    )
     joint_name_indices = build_name_index(
         motion_joint_names,
         manifest.tracking_joint_names,
@@ -325,6 +338,51 @@ def _build_name_mapping(
         NameIndexMapping(name=name, motion_index=motion_index, mujoco_index=int(mujoco_index))
         for motion_index, (name, mujoco_index) in enumerate(zip(motion_names, mujoco_indices))
     )
+
+
+def _build_body_name_index(
+    motion_body_names: Sequence[str],
+    mujoco_body_names: Sequence[str],
+    *,
+    object_asset_name: str,
+    task_object_body_name: str,
+    asset_object_body_names: Sequence[str],
+    label: str,
+) -> list[int]:
+    alias_map = {
+        name: resolved_name
+        for name in (object_asset_name, task_object_body_name)
+        if (resolved_name := _resolve_asset_body_alias(name, asset_object_body_names=asset_object_body_names)) != name
+    }
+    if not alias_map:
+        return build_name_index(motion_body_names, mujoco_body_names, label=label)
+
+    available_index = {name: index for index, name in enumerate(mujoco_body_names)}
+    missing = []
+    indices = []
+    for body_name in motion_body_names:
+        resolved_name = alias_map.get(body_name, body_name)
+        if resolved_name not in available_index:
+            missing.append(body_name)
+            continue
+        indices.append(available_index[resolved_name])
+    if missing:
+        raise ValueError(f"missing {label} names: {missing}")
+    return indices
+
+
+def _resolve_asset_body_alias(
+    body_name: str,
+    *,
+    asset_object_body_names: Sequence[str],
+) -> str:
+    if body_name in asset_object_body_names:
+        return body_name
+    if len(asset_object_body_names) == 1:
+        only_body_name = str(asset_object_body_names[0])
+        if only_body_name == f"{body_name}_body":
+            return only_body_name
+    return body_name
 
 
 def _resolve_reference_object_body_name(

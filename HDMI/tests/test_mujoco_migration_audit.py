@@ -192,6 +192,55 @@ def _write_component_report(tmp_path: Path, *, gate_passed: bool = True) -> Path
     return report_path
 
 
+def _write_closed_loop_success_report(tmp_path: Path, *, gate_passed: bool = True) -> Path:
+    report_path = tmp_path / "closed_loop_success_audit.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "closed_loop_success_gate_passed": gate_passed,
+                "task_count": 13,
+                "passed_task_count": 13 if gate_passed else 0,
+                "failed_task_count": 0 if gate_passed else 1,
+                "missing_summary_task_count": 0,
+                "failures": []
+                if gate_passed
+                else [
+                    {
+                        "task_name": "G1PushBox",
+                        "reason": "success_below_min",
+                        "actual": 0.0,
+                        "limit": 0.9,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return report_path
+
+
+def _write_source_reference_report(tmp_path: Path, *, gate_passed: bool = True) -> Path:
+    report_path = tmp_path / "source_reference_audit.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "gate_passed": gate_passed,
+                "upstream_reference": {"repository": "https://github.com/LeCAR-Lab/HDMI"},
+                "failures": []
+                if gate_passed
+                else [
+                    {
+                        "component": "task_semantic_fields",
+                        "reason": "task_semantic_fields_gate_failed",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return report_path
+
+
 def _write_partial_component_report(tmp_path: Path) -> Path:
     report_path = tmp_path / "partial_component_audit.json"
     report_path.write_text(
@@ -214,6 +263,8 @@ def test_migration_audit_passes_with_payloads_mapping_training_policy_and_playba
     policy_report_path = _write_policy_export_report(tmp_path, gate_passed=True)
     playback_report_path = _write_playback_parity_report(tmp_path, parity_passed=True)
     component_report_path = _write_component_report(tmp_path, gate_passed=True)
+    closed_loop_success_report_path = _write_closed_loop_success_report(tmp_path, gate_passed=True)
+    source_reference_report_path = _write_source_reference_report(tmp_path, gate_passed=True)
 
     exit_code = audit.main(
         [
@@ -247,6 +298,12 @@ def test_migration_audit_passes_with_payloads_mapping_training_policy_and_playba
             "--component-report",
             str(component_report_path),
             "--require-component-reports",
+            "--closed-loop-success-report",
+            str(closed_loop_success_report_path),
+            "--require-closed-loop-success",
+            "--source-reference-report",
+            str(source_reference_report_path),
+            "--require-source-reference",
         ]
     )
 
@@ -264,6 +321,10 @@ def test_migration_audit_passes_with_payloads_mapping_training_policy_and_playba
     assert report["playback_parity"]["num_reports"] == 1
     assert report["component_reports"]["gate_passed"] is True
     assert report["component_reports"]["num_reports"] == 1
+    assert report["closed_loop_success"]["gate_passed"] is True
+    assert report["closed_loop_success"]["num_reports"] == 1
+    assert report["source_reference"]["gate_passed"] is True
+    assert report["source_reference"]["num_reports"] == 1
 
 
 def test_migration_audit_rejects_playback_report_without_threshold_evidence(tmp_path, capsys):
@@ -327,6 +388,8 @@ def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, 
     policy_report_path = _write_policy_export_report(tmp_path, gate_passed=False)
     playback_report_path = _write_playback_parity_report(tmp_path, parity_passed=False)
     component_report_path = _write_component_report(tmp_path, gate_passed=False)
+    closed_loop_success_report_path = _write_closed_loop_success_report(tmp_path, gate_passed=False)
+    source_reference_report_path = _write_source_reference_report(tmp_path, gate_passed=False)
 
     exit_code = audit.main(
         [
@@ -354,6 +417,12 @@ def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, 
             "--component-report",
             str(component_report_path),
             "--require-component-reports",
+            "--closed-loop-success-report",
+            str(closed_loop_success_report_path),
+            "--require-closed-loop-success",
+            "--source-reference-report",
+            str(source_reference_report_path),
+            "--require-source-reference",
         ]
     )
 
@@ -367,6 +436,8 @@ def test_migration_audit_fails_when_required_components_are_unhealthy(tmp_path, 
     assert "policy_export" in failure_components
     assert "playback_parity" in failure_components
     assert "component_reports" in failure_components
+    assert "closed_loop_success" in failure_components
+    assert "source_reference" in failure_components
 
 
 def test_migration_audit_fails_when_component_report_omits_required_components(tmp_path, capsys):

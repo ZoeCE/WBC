@@ -7,7 +7,7 @@ import re
 from tensordict.tensordict import TensorDictBase, TensorDict
 from torchrl.envs import EnvBase
 from torchrl.data import (
-    Composite, 
+    Composite,
     Binary,
     UnboundedContinuous,
 )
@@ -40,7 +40,7 @@ def parse_name_and_class(s: str):
 
 
 class ObsGroup:
-    
+
     def __init__(
         self,
         name: str,
@@ -70,7 +70,7 @@ class ObsGroup:
         output = self._compute()
         tensordict[self.name] = output
         return tensordict
-    
+
     # @torch.compile(mode="reduce-overhead")
     def _compute(self) -> torch.Tensor:
         # if self.name == "amp_obs_" and not hasattr(self, "_exported"):
@@ -106,7 +106,7 @@ class ObsGroup:
             tensors.append(tensor)
             # print(f"\t{obs_key}: {tensor.shape}")
         return torch.cat(tensors, dim=-1)
-    
+
     def symmetry_transforms(self):
         transforms = []
         for obs_key, func in self.funcs.items():
@@ -118,7 +118,7 @@ class ObsGroup:
 
 class _Env(EnvBase):
     """
-    
+
     2024.10.10
     - disable delay
     - refactor flipping
@@ -132,12 +132,12 @@ class _Env(EnvBase):
         self.scene: InteractiveScene
         self.setup_scene()
         self._ground_mesh = None
-        
+
         self.max_episode_length = self.cfg.max_episode_length
         self.step_dt = self.cfg.sim.step_dt
         self.physics_dt = self.sim.get_physics_dt()
         self.decimation = int(self.step_dt / self.physics_dt)
-        
+
         print(f"Step dt: {self.step_dt}, physics dt: {self.physics_dt}, decimation: {self.decimation}")
 
         super().__init__(
@@ -195,18 +195,18 @@ class _Env(EnvBase):
         # self._update_callbacks.append(self.command_manager.update)
         self._reset_callbacks.append(self.command_manager.reset)
         self._debug_draw_callbacks.append(self.command_manager.debug_draw)
-        
+
         self.action_manager: mdp.ActionManager = hydra.utils.instantiate(self.cfg.action, env=self)
         self._reset_callbacks.append(self.action_manager.reset)
         self._debug_draw_callbacks.append(self.action_manager.debug_draw)
-        
+
         self.action_spec = Composite(
             {
                 "action": UnboundedContinuous((self.num_envs, self.action_dim))
             },
             shape=[self.num_envs]
         ).to(self.device)
-        
+
         addons = self.cfg.get("addons", {})
         print(f"Addons: {ADDONS.keys()}")
         for key, params in addons.items():
@@ -215,7 +215,7 @@ class _Env(EnvBase):
             self._reset_callbacks.append(addon.reset)
             self._update_callbacks.append(addon.update)
             self._debug_draw_callbacks.append(addon.debug_draw)
-        
+
         for key, params in self.cfg.randomization.items():
             if key == "body_scale":
                 continue
@@ -228,7 +228,7 @@ class _Env(EnvBase):
             self._update_callbacks.append(rand.update)
 
         for group_key, params in self.cfg.observation.items():
-            funcs = OrderedDict()            
+            funcs = OrderedDict()
             for obs_spec, kwargs in params.items():
                 obs_name, obs_cls_name = parse_name_and_class(obs_spec)
                 obs_cls = mdp.Observation.registry[obs_cls_name]
@@ -240,12 +240,12 @@ class _Env(EnvBase):
                 self._reset_callbacks.append(obs.reset)
                 self._debug_draw_callbacks.append(obs.debug_draw)
                 self._post_step_callbacks.append(obs.post_step)
-            
+
             self.observation_funcs[group_key] = ObsGroup(group_key, funcs)
-        
+
         for callback in self._startup_callbacks:
-            callback()        
-       
+            callback()
+
         reward_spec = Composite({})
 
         # parse rewards
@@ -282,7 +282,7 @@ class _Env(EnvBase):
                 print(f"\t{rew_name}: \t{reward.weight:.2f}, \t{reward.enabled}")
                 self._stats_ema[group_name][rew_name] = (torch.tensor(0., device=self.device), torch.tensor(0., device=self.device))
                 self._perf_ema_reward[group_name][rew_name] = (torch.tensor(0., device=self.device), torch.tensor(0., device=self.device))
-            
+
             self.reward_groups[group_name] = RewardGroup(self, group_name, funcs, multiplicative=multiplicative)
             reward_spec["stats", group_name, "return"] = UnboundedContinuous(1, device=self.device)
 
@@ -300,7 +300,7 @@ class _Env(EnvBase):
                 raise e
 
         self.observation_spec = Composite(
-            observation_spec, 
+            observation_spec,
             shape=[self.num_envs],
             device=self.device
         )
@@ -317,7 +317,7 @@ class _Env(EnvBase):
         self.timestamp = 0
 
         self.stats = self.reward_spec["stats"].zero()
-    
+
         self.input_tensordict = None
         self.extra = {}
         self.reset_time = 0.
@@ -328,7 +328,7 @@ class _Env(EnvBase):
         self.termination_time = 0.
         self.observation_time = 0.
         self.ema_cnt = 0.
-        
+
     def set_progress(self, progress: int):
         self.current_iter = progress
 
@@ -353,7 +353,7 @@ class _Env(EnvBase):
                 group_time += (sum / cnt).item()
                 result[f"performance_reward/{group_key}.{rew_key}"] = (sum / cnt).item()
             result[f"performance_reward/{group_key}/total"] = group_time
-        
+
         for key, (sum, cnt) in self._perf_ema_update.items():
             result[f"performance_update/{key}"] = (sum / cnt).item()
         result["performance/reset_time"] = self.reset_time / self.ema_cnt
@@ -364,10 +364,10 @@ class _Env(EnvBase):
         result["performance/update_time"] = self.update_time / self.ema_cnt
         result["performance/simulation_time"] = self.simulation_time / self.ema_cnt
         return result
-    
+
     def setup_scene(self):
         raise NotImplementedError
-    
+
     def _reset(self, tensordict: TensorDictBase | None = None, **kwargs) -> TensorDictBase:
         start = time.perf_counter()
         if tensordict is not None:
@@ -391,7 +391,7 @@ class _Env(EnvBase):
     @abstractmethod
     def _reset_idx(self, env_ids: torch.Tensor):
         raise NotImplementedError
-    
+
     def apply_action(self, tensordict: TensorDictBase, substep: int):
         self.input_tensordict = tensordict
         self.action_manager(tensordict, substep)
@@ -402,12 +402,25 @@ class _Env(EnvBase):
             obs_group.compute(tensordict, self.timestamp)
         end = time.perf_counter()
         self.observation_time = self.observation_time * self._stats_ema_decay + (end - start)
-            
+
+    def _refresh_post_command_observation_cache(self):
+        hdmi_command_observation_module = "active_adaptation.envs.mdp.commands.hdmi.observations"
+        for group_name, group in self.observation_funcs.items():
+            if group is None:
+                continue
+            for obs in group.funcs.values():
+                should_refresh = (
+                    group_name in ("command", "object")
+                    or obs.__class__.__module__ == hdmi_command_observation_module
+                )
+                if should_refresh:
+                    obs.update()
+
     def _compute_reward(self) -> TensorDictBase:
         start = time.perf_counter()
         if not self.reward_groups:
             return {"reward": torch.ones((self.num_envs, 1), device=self.device)}
-        
+
         rewards = []
         for group, reward_group in self.reward_groups.items():
             reward = reward_group.compute()
@@ -425,12 +438,12 @@ class _Env(EnvBase):
         end = time.perf_counter()
         self.reward_time = self.reward_time * self._stats_ema_decay + (end - start)
         return {"reward": rewards}
-    
+
     def _compute_termination(self) -> TensorDictBase:
         start = time.perf_counter()
         if not self.termination_funcs:
             return torch.zeros((self.num_envs, 1), dtype=bool, device=self.device)
-        
+
         flags = []
         for key, func in self.termination_funcs.items():
             flag = func()
@@ -447,14 +460,14 @@ class _Env(EnvBase):
             # time_start = time.perf_counter()
             callback()
             # time_end = time.perf_counter()
-            
+
             # # Get the class name and category
             # name = callback.__self__.__class__.__name__
             # category = classify_callback(callback)
-            
+
             # # Create the new key format: category.name
             # key = f"{category}.{name}"
-            
+
             # if key not in self._perf_ema_update:
             #     self._perf_ema_update[key] = (torch.tensor(0., device=self.device), torch.tensor(0., device=self.device))
             # sum_, cnt = self._perf_ema_update[key]
@@ -471,7 +484,7 @@ class _Env(EnvBase):
         start = time.perf_counter()
         for substep in range(self.decimation):
             for asset in self.scene.articulations.values():
-                if asset.has_external_wrench:
+                if getattr(asset, "has_external_wrench", False):
                     asset._external_force_b.zero_()
                     asset._external_torque_b.zero_()
                     asset.has_external_wrench = False
@@ -487,7 +500,7 @@ class _Env(EnvBase):
         self.simulation_time = self.simulation_time * self._stats_ema_decay + (end - start)
         self.discount.fill_(1.0)
         self._update()
-        
+
         tensordict = TensorDict({}, self.num_envs, device=self.device)
         tensordict.update(self._compute_reward())
 
@@ -498,6 +511,7 @@ class _Env(EnvBase):
         end = time.perf_counter()
         self.command_time = self.command_time * self._stats_ema_decay + (end - start)
 
+        self._refresh_post_command_observation_cache()
         self._compute_observation(tensordict)
         terminated = self._compute_termination()
         truncated = (self.episode_length_buf >= self.max_episode_length).unsqueeze(1)
@@ -514,10 +528,10 @@ class _Env(EnvBase):
                 self.debug_draw.clear()
             for callback in self._debug_draw_callbacks:
                 callback()
-        
+
         self.ema_cnt = self.ema_cnt * self._stats_ema_decay + 1.
         return tensordict
-    
+
     @property
     def ground_mesh(self):
         if self.backend == "isaac":
@@ -526,7 +540,7 @@ class _Env(EnvBase):
             return self._ground_mesh
         else:
             raise NotImplementedError
-        
+
     def get_ground_height_at(self, pos: torch.Tensor) -> torch.Tensor:
         if self.backend == "isaac":
             bshape = pos.shape[:-1]
@@ -546,7 +560,7 @@ class _Env(EnvBase):
             return ray_distance.reshape(*bshape)
         elif self.backend == "mujoco":
             return torch.zeros(pos.shape[:-1], device=self.device)
-    
+
     def _set_seed(self, seed: int = -1):
         # import omni.replicator.core as rep
         # rep.set_global_seed(seed)
@@ -616,7 +630,7 @@ class RewardGroup:
         self.multiplicative = multiplicative
         self.enabled_rewards = sum([func.enabled for func in funcs.values()])
         self.rew_buf = torch.zeros(env.num_envs, self.enabled_rewards, device=env.device)
-    
+
     def compute(self) -> torch.Tensor:
         rewards = []
         # try:
@@ -650,18 +664,18 @@ class RewardGroup:
 def classify_callback(callback):
     """
     Classify a callback based on its type to determine which category it belongs to.
-    
+
     Args:
         callback: The callback function to classify
-        
+
     Returns:
         str: One of 'reward', 'observation', 'randomization', 'termination', 'addon', 'command'
     """
     if not hasattr(callback, '__self__'):
         return 'unknown'
-    
+
     callback_obj = callback.__self__
-    
+
     # Check inheritance hierarchy
     if isinstance(callback_obj, mdp.Reward):
         return 'reward'

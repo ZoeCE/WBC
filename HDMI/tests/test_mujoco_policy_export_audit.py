@@ -4,10 +4,26 @@ from pathlib import Path
 
 import torch
 import yaml
+from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
+
+import active_adaptation.utils.export as export_utils
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class _MultiInputActionModule(torch.nn.Module):
+    def __init__(self, action_dim: int = 1):
+        super().__init__()
+        self.action_dim = int(action_dim)
+
+    def forward(self, *inputs):
+        batch = inputs[0].shape[0]
+        total = torch.zeros(batch, 1, dtype=inputs[0].dtype, device=inputs[0].device)
+        for tensor in inputs:
+            total = total + tensor.reshape(batch, -1).sum(dim=-1, keepdim=True) * 0.0
+        return total.expand(batch, self.action_dim)
 
 
 def _load_audit_cli_module():
@@ -18,7 +34,7 @@ def _load_audit_cli_module():
     return module
 
 
-def _write_policy_export(export_dir: Path, *, reference_observation: bool = False) -> Path:
+def _write_policy_export(export_dir: Path, *, reference_observation: bool = False, onnx: bool = False) -> Path:
     export_dir.mkdir(parents=True)
     policy_path = export_dir / "policy-test-final.pt"
     module = TensorDictModule(
@@ -49,6 +65,12 @@ def _write_policy_export(export_dir: Path, *, reference_observation: bool = Fals
             }
         )
     )
+    if onnx:
+        export_utils.export_onnx(
+            module,
+            TensorDict({"policy": torch.zeros(1, 1)}, batch_size=[1]),
+            str(policy_path.with_suffix(".onnx")),
+        )
     return policy_path
 
 
@@ -92,7 +114,8 @@ def test_policy_export_audit_require_policy_fails_when_export_is_missing(tmp_pat
         "export_policy=true",
         "export_policy_exit=true",
         "export_policy_benchmark_iters=0",
-        "export_onnx_policy=false",
+        "export_onnx_policy=true",
+        "export_onnx_required=true",
         "headless=true",
         "backend=mujoco",
     ]
@@ -265,3 +288,262 @@ def test_policy_export_audit_can_gate_checkpoint_provenance(tmp_path, capsys):
         "checkpoint_algo",
         "checkpoint_total_frames",
     ]
+
+
+def test_policy_export_audit_can_require_obs_action_smoke(tmp_path, capsys):
+    module = _load_audit_cli_module()
+    task_path = ROOT / "cfg/task/G1/hdmi/push_box.yaml"
+    policy_path = _write_policy_export(tmp_path / "exports/G1PushBox", reference_observation=True)
+
+    exit_code = module.main(
+        [
+            "--task-yaml",
+            str(task_path),
+            "--policy-path",
+            str(policy_path),
+            "--require-policy",
+            "--require-reference-observation",
+            "--require-obs-action-smoke",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert summary["gate_passed"] is True
+    assert summary["missing_requirements"] == []
+    assert summary["policy_obs_action_smoke_ok"] is True
+    assert summary["policy_smoke_observation_shapes"] == {
+        "policy": [1, 1],
+        "command": [1, 1],
+    }
+    assert summary["policy_smoke_action_shape"] == [1, 1]
+    assert summary["policy_smoke_joint_target_shape"] == [1, 1]
+
+
+def test_policy_export_audit_can_require_onnx_policy(tmp_path, capsys):
+    module = _load_audit_cli_module()
+    task_path = ROOT / "cfg/task/G1/hdmi/push_box.yaml"
+    policy_path = _write_policy_export(tmp_path / "exports/G1PushBox", reference_observation=True)
+
+    exit_code = module.main(
+        [
+            "--task-yaml",
+            str(task_path),
+            "--policy-path",
+            str(policy_path),
+            "--require-policy",
+            "--require-onnx-policy",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert summary["policy_onnx_exists"] is False
+    assert summary["policy_onnx_metadata_exists"] is False
+    assert summary["missing_requirements"] == [
+        "exported_policy_onnx",
+        "exported_policy_onnx_json",
+        "policy_onnx_loadable",
+    ]
+
+    policy_path = _write_policy_export(
+        tmp_path / "exports_with_onnx/G1PushBox",
+        reference_observation=True,
+        onnx=True,
+    )
+    capsys.readouterr()
+    exit_code = module.main(
+        [
+            "--task-yaml",
+            str(task_path),
+            "--policy-path",
+            str(policy_path),
+            "--require-policy",
+            "--require-onnx-policy",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert summary["gate_passed"] is True
+    assert summary["policy_onnx_loadable"] is True
+    assert summary["policy_onnx_input_count"] == 1
+    assert summary["policy_onnx_output_count"] == 1
+
+
+def test_policy_export_audit_obs_action_smoke_uses_reference_observation_specific_dims(tmp_path, capsys):
+    module = _load_audit_cli_module()
+    task_path = ROOT / "cfg/task/G1/hdmi/push_box.yaml"
+    policy_path = tmp_path / "exports/G1PushBox/policy-command-final.pt"
+    policy_path.parent.mkdir(parents=True)
+    command_dim = 2 * 2 * 3 + 2 * 1 + 1
+    policy = TensorDictModule(
+        torch.nn.Linear(command_dim, 1, bias=False),
+        in_keys=["command"],
+        out_keys=["action"],
+    )
+    torch.save(policy, policy_path)
+    policy_path.with_suffix(".yaml").write_text(
+        yaml.safe_dump(
+            {
+                "observation": {
+                    "command": {
+                        "ref_body_pos_future_local": {
+                            "future_steps": [1, 2],
+                            "body_names": ["pelvis", "left_elbow_link"],
+                            "joint_names": ["left_elbow_joint"],
+                            "root_body_name": "pelvis",
+                        },
+                        "ref_joint_pos_future": {
+                            "future_steps": [1, 2],
+                            "body_names": ["pelvis", "left_elbow_link"],
+                            "joint_names": ["left_elbow_joint"],
+                            "root_body_name": "pelvis",
+                        },
+                        "ref_motion_phase": {
+                            "future_steps": [1, 2],
+                            "body_names": ["pelvis", "left_elbow_link"],
+                            "joint_names": ["left_elbow_joint"],
+                            "root_body_name": "pelvis",
+                        },
+                    }
+                },
+                "action_scale": 1.0,
+                "policy_joint_names": ["left_elbow_joint"],
+                "isaac_joint_names": [
+                    "left_hip_pitch_joint",
+                    "left_hip_roll_joint",
+                    "left_hip_yaw_joint",
+                    "left_elbow_joint",
+                ],
+                "isaac_body_names": ["pelvis", "left_elbow_link", "left_wrist_yaw_link"],
+                "default_joint_pos": 0.0,
+            }
+        )
+    )
+
+    exit_code = module.main(
+        [
+            "--task-yaml",
+            str(task_path),
+            "--policy-path",
+            str(policy_path),
+            "--require-policy",
+            "--require-reference-observation",
+            "--require-obs-action-smoke",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert summary["policy_obs_action_smoke_ok"] is True
+    assert summary["policy_smoke_observation_shapes"] == {"command": [1, command_dim]}
+    assert summary["policy_smoke_action_shape"] == [1, 1]
+
+
+def test_policy_export_audit_smoke_builds_teacher_privileged_wbc_observations(tmp_path, capsys):
+    module = _load_audit_cli_module()
+    task_path = ROOT / "cfg/task/G1/hdmi/push_box.yaml"
+    policy_path = tmp_path / "exports/G1PushBox/policy-teacher-final.pt"
+    policy_path.parent.mkdir(parents=True)
+    policy = TensorDictModule(
+        _MultiInputActionModule(action_dim=1),
+        in_keys=["policy", "command", "object", "priv", "ref_joint_pos_"],
+        out_keys=["action"],
+    )
+    torch.save(policy, policy_path)
+    policy_path.with_suffix(".yaml").write_text(
+        yaml.safe_dump(
+            {
+                "observation": {
+                    "policy": {
+                        "joint_pos_history": {
+                            "joint_names": ["left_hip_pitch_joint"],
+                            "history_steps": [0],
+                        },
+                        "prev_actions": {"steps": 2},
+                    },
+                    "command": {
+                        "ref_root_pos_future_b": {"future_steps": [1, 2]},
+                        "ref_root_ori_future_b": {"future_steps": [1, 2]},
+                        "ref_motion_phase": {"future_steps": [1, 2]},
+                    },
+                    "object": {
+                        "object_pos_b": {"object_name": "box"},
+                        "object_ori_b": {"object_name": "box"},
+                        "object_joint_pos": {},
+                        "object_joint_vel": {},
+                        "object_joint_torque": {},
+                    },
+                    "priv": {
+                        "ref_body_pos_future_local": {
+                            "future_steps": [1, 2],
+                            "body_names": ["pelvis", "left_elbow_link"],
+                            "joint_names": ["left_hip_pitch_joint"],
+                            "root_body_name": "pelvis",
+                        },
+                        "diff_body_pos_future_local": {
+                            "future_steps": [1, 2],
+                            "body_names": ["pelvis", "left_elbow_link"],
+                            "root_body_name": "pelvis",
+                        },
+                        "diff_body_ori_future_local": {
+                            "future_steps": [1, 2],
+                            "body_names": ["pelvis", "left_elbow_link"],
+                            "root_body_name": "pelvis",
+                        },
+                        "diff_body_lin_vel_future_local": {
+                            "future_steps": [1, 2],
+                            "body_names": ["pelvis", "left_elbow_link"],
+                            "root_body_name": "pelvis",
+                        },
+                        "diff_body_ang_vel_future_local": {
+                            "future_steps": [1, 2],
+                            "body_names": ["pelvis", "left_elbow_link"],
+                            "root_body_name": "pelvis",
+                        },
+                        "root_linvel_b": {},
+                        "body_pos_b": {"body_names": ["pelvis", "left_elbow_link"]},
+                        "body_vel_b": {"body_names": ["pelvis", "left_elbow_link"]},
+                        "body_height": {"body_names": ["pelvis", "left_elbow_link"]},
+                        "applied_torque": {"joint_names": ["left_hip_pitch_joint"]},
+                        "diff_object_pos_future": {"future_steps": [1, 2]},
+                        "diff_object_ori_future": {"future_steps": [1, 2]},
+                        "ref_object_contact_future": {"future_steps": [1, 2]},
+                    },
+                    "ref_joint_pos_": {
+                        "ref_joint_pos_action_policy": {},
+                    },
+                },
+                "action_scale": 1.0,
+                "policy_joint_names": ["left_hip_pitch_joint"],
+                "isaac_joint_names": ["left_hip_pitch_joint"],
+                "isaac_body_names": ["pelvis", "left_elbow_link"],
+                "default_joint_pos": 0.0,
+            }
+        )
+    )
+
+    exit_code = module.main(
+        [
+            "--task-yaml",
+            str(task_path),
+            "--policy-path",
+            str(policy_path),
+            "--require-policy",
+            "--require-reference-observation",
+            "--require-obs-action-smoke",
+        ]
+    )
+    summary = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert summary["policy_obs_action_smoke_ok"] is True
+    assert summary["policy_smoke_action_shape"] == [1, 1]
+    assert set(summary["policy_smoke_observation_shapes"]) == {
+        "policy",
+        "command",
+        "object",
+        "priv",
+        "ref_joint_pos_",
+    }

@@ -175,6 +175,32 @@ def test_feet_contact_rewards_match_hdmi_formulas():
     assert torch.allclose(stumble, expected_stumble)
 
 
+def test_impact_force_l2_sanitizes_nonfinite_contact_sensor_values():
+    net_forces_w_history = torch.tensor(
+        [
+            [
+                [[float("nan"), float("inf"), -float("inf")], [30.0, 0.0, 0.0]],
+                [[10.0, 0.0, 0.0], [float("nan"), 0.0, 0.0]],
+            ],
+        ]
+    )
+    first_contact = torch.tensor([[True, True]])
+    default_mass_total = torch.tensor([10.0])
+
+    impact = reward_parity.impact_force_l2(
+        net_forces_w_history=net_forces_w_history,
+        first_contact=first_contact,
+        default_mass_total=default_mass_total,
+    )
+
+    sanitized = torch.nan_to_num(net_forces_w_history, nan=0.0, posinf=0.0, neginf=0.0)
+    contact_forces = sanitized.norm(dim=-1).mean(dim=1)
+    force = contact_forces / default_mass_total[:, None]
+    expected = -(force.square() * first_contact).clamp_max(10.0).sum(dim=1, keepdim=True)
+    assert torch.isfinite(impact).all()
+    assert torch.allclose(impact, expected)
+
+
 def test_eef_contact_exp_matches_hdmi_contact_reward_formula():
     contact_eef_pos_w = torch.tensor(
         [
@@ -213,6 +239,34 @@ def test_eef_contact_exp_matches_hdmi_contact_reward_formula():
     active_reward = torch.exp(-pos_error / 0.5) * torch.exp(contact_frc / 2.0)
     expected = (active_reward * ref_object_contact.float() * 0.8 + 1 - ref_object_contact.float()).mean(dim=-1)
     assert torch.allclose(reward, expected.unsqueeze(-1))
+
+
+def test_eef_contact_exp_sanitizes_nonfinite_contact_sensor_values():
+    contact_eef_pos_w = torch.zeros(1, 2, 3)
+    contact_target_pos_w = torch.zeros(1, 2, 3)
+    eef_contact_forces_b = torch.tensor(
+        [
+            [
+                [float("nan"), float("inf"), -float("inf")],
+                [0.0, 0.0, 4.0],
+            ]
+        ]
+    )
+    ref_object_contact = torch.tensor([[True, True]])
+
+    reward = eef_contact_exp(
+        contact_eef_pos_w=contact_eef_pos_w,
+        contact_target_pos_w=contact_target_pos_w,
+        eef_contact_forces_b=eef_contact_forces_b,
+        ref_object_contact=ref_object_contact,
+        frc_sigma=2.0,
+        frc_thres=2.0,
+    )
+
+    sanitized = torch.nan_to_num(eef_contact_forces_b, nan=0.0, posinf=0.0, neginf=0.0)
+    expected = torch.exp((sanitized.norm(dim=-1) - 2.0).clamp_max(0.0) / 2.0).mean(dim=-1, keepdim=True)
+    assert torch.isfinite(reward).all()
+    assert torch.allclose(reward, expected)
 
 
 def test_object_position_tracking_matches_hdmi_formula():

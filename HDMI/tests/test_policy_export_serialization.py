@@ -1,9 +1,11 @@
 import io
+import json
 
+import onnxruntime as ort
 import pytest
 import torch
 from tensordict import TensorDict
-from tensordict.nn import TensorDictModule
+from tensordict.nn import TensorDictModule, TensorDictSequential
 
 import active_adaptation.utils.export as export_utils
 from active_adaptation.learning.ppo.ppo_amp import DummyRefJointPos as AmpDummyRefJointPos
@@ -60,6 +62,39 @@ def test_optional_onnx_export_can_require_success(monkeypatch, tmp_path):
             str(tmp_path / "policy.onnx"),
             required=True,
         )
+
+def test_export_onnx_writes_sim2real_compatible_tensordict_model(tmp_path):
+    class TinyActor(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.net = torch.nn.Sequential(
+                torch.nn.Linear(3, 4),
+                torch.nn.LayerNorm(4),
+                torch.nn.Mish(),
+                torch.nn.Linear(4, 2),
+            )
+
+        def forward(self, policy):
+            return self.net(policy)
+
+    module = TensorDictSequential(
+        TensorDictModule(TinyActor(), in_keys=["policy"], out_keys=["action"])
+    ).eval()
+    td = TensorDict(
+        {"policy": torch.tensor([[0.1, 0.2, 0.3]], dtype=torch.float32)},
+        batch_size=[1],
+    )
+    path = tmp_path / "policy.onnx"
+
+    export_utils.export_onnx(module, td, str(path))
+
+    metadata = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+    session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    output = session.run(None, {session.get_inputs()[0].name: td["policy"].numpy()})
+    assert path.is_file()
+    assert metadata["in_keys"] == ["policy"]
+    assert metadata["out_keys"] == ["action"]
+    assert output[0].shape == (1, 2)
 
 
 def test_ppo_amp_residual_action_modules_are_export_serializable():

@@ -110,7 +110,7 @@ python scripts/mujoco_external_payloads.py --verify-sha256 --require-present
 
 ## Train and Evaluate
 
-Teacher policy 
+Teacher policy
 ```bash
 # train teacher
 python scripts/train.py algo=ppo_roa_train task=G1/hdmi/move_suitcase
@@ -132,19 +132,104 @@ To export trained policies, add `export_policy=true` to the play script.
 
 Please see [github.com/EGalahad/sim2real](https://github.com/EGalahad/sim2real) for details.
 
+## MuJoCo Sim2Sim: 4 Checkpoint Reproduction
+
+This project vendors the HDMI sim2real deployment payload under `third_party/sim2real_hdmi/`. It is not a submodule and does not require a separate `sim2real-hdmi` checkout for the 4 checkpoint reproduction below.
+
+### 1. Core Definition
+
+The delivered sim2sim target is strict closed-loop replay of the 4 trained ONNX policies that exist in `third_party/sim2real_hdmi/checkpoints`, using MuJoCo dynamics and the same policy observation/action contract:
+
+$$
+a_t=\pi(o_t),\quad q^{target}_t=q^{default}+a_t\odot s,\quad \tau_t=k_p(q^{target}_t-q_t)-k_d\dot q_t
+$$
+
+### 2. System Position
+
+`checkpoint(.onnx/.yaml/.json) -> DirectSim2RealPolicy -> grouped observation {command, policy, object?} -> ONNX action -> PD target -> MuJoCo step -> success metric`
+
+### 3. Scope
+
+| Scenario | Policy | Success metric |
+| --- | --- | --- |
+| `G1Dance1Subject2` | `policy-1781wsjf-final.onnx` | `not_fallen == 1` |
+| `G1TrackSuitcase` | `policy-v55m8a23-final.onnx` | `suitcase_xy_displacement >= 0.5` |
+| `G1PushDoorHand` | `policy-xg6644nr-final.onnx` | `door_joint_abs >= 0.2` |
+| `G1RollBall` | `policy-yte3rr8b-final.onnx` | `ball_xy_displacement >= 0.3` |
+
+The 13 HDMI/WBC training tasks are a larger migration target and are not required for this 4-checkpoint sim2sim gate.
+
+### 4. Run the Gate
+
+```bash
+cd /home/zoe/Workspace/wbc-HDMI/HDMI
+
+/home/zoe/miniconda3/envs/wbc/bin/python \
+  scripts/mujoco_hdmi_sim2real_runner.py \
+  --scenario all \
+  --duration-sec 6 \
+  --output-dir /tmp/wbc_hdmi_goal_full_parity_v2/sim2real_official_4ckpt_6s_bundled_current \
+  --no-video
+```
+
+Expected current result:
+
+| Scenario | Pass | Measured value |
+| --- | --- | --- |
+| `G1Dance1Subject2` | yes | `not_fallen = 1.0` |
+| `G1TrackSuitcase` | yes | `suitcase_xy_displacement = 1.90876592` |
+| `G1PushDoorHand` | yes | `door_joint_abs = 0.81166974` |
+| `G1RollBall` | yes | `ball_xy_displacement = 0.89243166` |
+
+Read the machine-checkable summary:
+
+```bash
+cat /tmp/wbc_hdmi_goal_full_parity_v2/sim2real_official_4ckpt_6s_bundled_current/summary.json
+```
+
+### 5. Export Videos
+
+```bash
+cd /home/zoe/Workspace/wbc-HDMI/HDMI
+
+/home/zoe/miniconda3/envs/wbc/bin/python \
+  scripts/mujoco_hdmi_sim2real_runner.py \
+  --scenario all \
+  --duration-sec 8 \
+  --output-dir /tmp/wbc_hdmi_goal_full_parity_v2/sim2real_official_4ckpt_8s_video_current
+```
+
+Copy videos to Mac:
+
+```bash
+mkdir -p ~/wbc_outputs/sim2real_official_4ckpt_8s_video_current
+scp 'a5000-wsl:/tmp/wbc_hdmi_goal_full_parity_v2/sim2real_official_4ckpt_8s_video_current/*.mp4' \
+  ~/wbc_outputs/sim2real_official_4ckpt_8s_video_current/
+```
+
+### 6. Debugging Checklist
+
+| Symptom | Check |
+| --- | --- |
+| Cannot import MuJoCo or Torch | Use `/home/zoe/miniconda3/envs/wbc/bin/python` |
+| Missing checkpoint or MJCF | Confirm `third_party/sim2real_hdmi/checkpoints` and `third_party/sim2real_hdmi/data/robots/g1` exist |
+| Observation shape matches but behavior is wrong | Check `isaac_joint_names`, `policy_joint_names`, body names, and MJCF joint names one by one |
+| Policy action is near zero or unstable | Inspect `.yaml` action scale, default joint pose, and object/reference motion path |
+| Video render fails | First run with `--no-video`; then check EGL/MuJoCo rendering setup |
+
 ## Citation
 
 If you find our work useful for your research, please consider cite us:
 
 ```
 @misc{weng2025hdmilearninginteractivehumanoid,
-      title={HDMI: Learning Interactive Humanoid Whole-Body Control from Human Videos}, 
+      title={HDMI: Learning Interactive Humanoid Whole-Body Control from Human Videos},
       author={Haoyang Weng and Yitang Li and Nikhil Sobanbabu and Zihan Wang and Zhengyi Luo and Tairan He and Deva Ramanan and Guanya Shi},
       year={2025},
       eprint={2509.16757},
       archivePrefix={arXiv},
       primaryClass={cs.RO},
-      url={https://arxiv.org/abs/2509.16757}, 
+      url={https://arxiv.org/abs/2509.16757},
 }
 ```
 

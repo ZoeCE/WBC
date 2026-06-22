@@ -835,7 +835,7 @@ def _write_reference_frame_to_scene(
     for object_index, current_object_view in enumerate(_as_object_views(object_view)):
         preferred_body_name = object_body_name if object_index == 0 else None
         reference_object_body_name = _reference_object_body_name(reference, current_object_view, preferred_body_name)
-        if reference_object_body_name is not None:
+        if reference_object_body_name is not None and _object_view_has_root_free_joint(current_object_view):
             body_index = _name_index(reference.body_names, reference_object_body_name, "body")
             object_pose = torch.cat(
                 [
@@ -848,6 +848,10 @@ def _write_reference_frame_to_scene(
         object_pairs = _reference_to_asset_joint_pairs(reference.requested_joint_names, current_object_view.joint_names)
         _write_asset_joint_pairs(current_object_view, ref_joint_pos, ref_joint_vel, object_pairs)
     scene.update(0.0)
+
+
+def _object_view_has_root_free_joint(object_view: Any) -> bool:
+    return getattr(object_view, "root_qposadr", None) is not None
 
 
 def _reference_object_body_name(reference: Any, object_view: Any, preferred_body_name: str | None) -> str | None:
@@ -1031,7 +1035,14 @@ def _gather_scene_body_tensor(
 
 def _find_object_named_value(object_view: Any | None, names_attr: str, name: str) -> tuple[Any, int] | None:
     for current_object_view in _as_object_views(object_view):
-        name_index = _name_to_index(getattr(current_object_view, names_attr))
+        names = getattr(current_object_view, names_attr)
+        if (
+            names_attr == "body_names"
+            and name == getattr(getattr(current_object_view, "spec", None), "asset_name", None)
+            and len(names) == 1
+        ):
+            return current_object_view, 0
+        name_index = _name_to_index(names)
         if name in name_index:
             return current_object_view, name_index[name]
     return None
@@ -1117,9 +1128,12 @@ def _build_kinematic_reward_state(
         if resolved_joint_name is not None and resolved_joint_name in object_view.joint_names:
             object_joint_index = _name_index(object_view.joint_names, resolved_joint_name, "object joint")
             object_joint_pos = object_view.data.joint_pos[:, object_joint_index]
-        if resolved_joint_name is not None and resolved_joint_name in reference.requested_joint_names:
-            reference_joint_index = reference.requested_joint_names.index(resolved_joint_name)
-            ref_object_joint_pos = ref_joint_pos[:, reference_joint_index]
+        if resolved_joint_name is not None and resolved_joint_name in reference.joint_names:
+            reference_joint_index = reference.joint_names.index(resolved_joint_name)
+            ref_object_joint_pos = _expand_reference_frame(
+                reference.joint_pos[step, reference_joint_index],
+                robot.num_instances,
+            )
 
         if contact_eef_body_names:
             (

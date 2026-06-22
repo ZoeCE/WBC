@@ -45,6 +45,26 @@ def test_mj_articulation_keeps_independent_batched_state_buffers():
     assert not torch.allclose(robot.data.applied_torque[0], robot.data.applied_torque[1])
 
 
+def test_mujoco_cvel_is_exposed_as_isaac_body_velocity_order():
+    module = _mujoco_env_module()
+    raw_cvel = np.array([[[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]]], dtype=np.float32)
+
+    body_vel_w = torch.as_tensor(module._mujoco_cvel_to_body_vel_w(raw_cvel))
+    data = module.MJArticulationData(
+        default_joint_pos=torch.zeros(1, 0),
+        default_joint_vel=torch.zeros(1, 0),
+        default_root_state=torch.zeros(1, 13),
+        default_mass=torch.zeros(1, 1),
+        default_inertia=torch.zeros(1, 1, 9),
+        body_vel_w=body_vel_w,
+    )
+
+    assert torch.allclose(body_vel_w[..., :3], torch.tensor([[[4.0, 5.0, 6.0]]]))
+    assert torch.allclose(body_vel_w[..., 3:], torch.tensor([[[1.0, 2.0, 3.0]]]))
+    assert torch.allclose(data.body_lin_vel_w, torch.tensor([[[4.0, 5.0, 6.0]]]))
+    assert torch.allclose(data.body_ang_vel_w, torch.tensor([[[1.0, 2.0, 3.0]]]))
+
+
 def test_mj_articulation_writes_joint_and_root_state_only_to_selected_envs():
     module = _mujoco_env_module()
     robot = module.MJArticulation(_robot_cfg(), num_envs=2)

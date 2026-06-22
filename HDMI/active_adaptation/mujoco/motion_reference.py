@@ -10,9 +10,15 @@ import torch
 @dataclass(frozen=True)
 class MujocoReferenceObservationFields:
     ref_body_pos_future_w: torch.Tensor
+    ref_body_quat_future_w: torch.Tensor
+    ref_body_lin_vel_future_w: torch.Tensor
+    ref_body_ang_vel_future_w: torch.Tensor
     ref_root_pos_w: torch.Tensor
     ref_root_quat_w: torch.Tensor
+    ref_root_pos_future_w: torch.Tensor
+    ref_root_quat_future_w: torch.Tensor
     ref_joint_pos_future: torch.Tensor
+    ref_joint_vel_future: torch.Tensor
     motion_t: torch.Tensor
     motion_len: torch.Tensor
 
@@ -103,9 +109,15 @@ class MujocoMotionReference:
 
         return MujocoReferenceObservationFields(
             ref_body_pos_future_w=self.body_pos_w[future_indices][:, :, self.body_indices],
+            ref_body_quat_future_w=self.body_quat_w[future_indices][:, :, self.body_indices],
+            ref_body_lin_vel_future_w=self.body_lin_vel_w[future_indices][:, :, self.body_indices],
+            ref_body_ang_vel_future_w=self.body_ang_vel_w[future_indices][:, :, self.body_indices],
             ref_root_pos_w=self.body_pos_w[root_indices, self.root_body_index],
             ref_root_quat_w=self.body_quat_w[root_indices, self.root_body_index],
+            ref_root_pos_future_w=self.body_pos_w[future_indices, self.root_body_index],
+            ref_root_quat_future_w=self.body_quat_w[future_indices, self.root_body_index],
             ref_joint_pos_future=self.joint_pos[future_indices][:, :, self.joint_indices],
+            ref_joint_vel_future=self.joint_vel[future_indices][:, :, self.joint_indices],
             motion_t=step,
             motion_len=torch.full_like(step, self.num_steps),
         )

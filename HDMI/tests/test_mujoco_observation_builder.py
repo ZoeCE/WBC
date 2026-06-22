@@ -101,6 +101,35 @@ def test_policy_builder_can_return_named_components_for_debugging():
     assert torch.allclose(pieces["applied_action"], torch.tensor([[0.2, -0.3]]))
 
 
+def test_body_height_named_selectors_follow_env_asset_body_order():
+    cfg = {
+        "priv": {
+            "body_height": {
+                "body_names": [".*ankle_roll_link", "pelvis", "torso_link"],
+            }
+        }
+    }
+    builder = MujocoObservationBuilder(cfg, policy_joint_names=["j0"])
+    state = _state(
+        root=[[0.0, 0.0, 0.0]],
+        gravity=[[0.0, 0.0, -1.0]],
+        joint=[[0.0]],
+        body_pos_w=[
+            [
+                [0.0, 0.0, 0.80],
+                [0.0, 0.0, 0.04],
+                [0.0, 0.0, 0.03],
+                [0.0, 0.0, 0.84],
+            ]
+        ],
+    )
+    state.body_names = ["pelvis", "left_ankle_roll_link", "right_ankle_roll_link", "torso_link"]
+
+    obs = builder.build_group("priv", state)
+
+    assert torch.allclose(obs, torch.tensor([[0.80, 0.04, 0.03, 0.84]]))
+
+
 def test_joint_pos_history_can_use_observation_joint_names_separate_from_actions():
     cfg = {
         "policy": {

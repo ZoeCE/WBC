@@ -19,6 +19,12 @@ from tensordict import TensorClass
 ArrayType = Union[np.ndarray, torch.Tensor]
 
 
+def _mujoco_cvel_to_body_vel_w(cvel: np.ndarray) -> np.ndarray:
+    """Convert MuJoCo cvel [angular, linear] to IsaacLab body_vel_w [linear, angular]."""
+    cvel_np = np.asarray(cvel)
+    return np.concatenate((cvel_np[..., 3:6], cvel_np[..., 0:3]), axis=-1)
+
+
 def quat_rotate(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
     """Rotate xyz vectors by wxyz quaternions without importing Isaac/Omni."""
     xyz = quat[..., 1:]
@@ -40,23 +46,23 @@ class MJArticulationData:
     default_root_state: ArrayType
     default_mass: ArrayType
     default_inertia: ArrayType
-    
+
     joint_stiffness: ArrayType = None
     joint_damping: ArrayType = None
 
     body_pos_w: ArrayType = None
     body_quat_w: ArrayType = None
-    
+
     joint_pos: ArrayType = None
     joint_pos_target: ArrayType = None
-    
+
     joint_vel: ArrayType = None
     joint_vel_target: ArrayType = None
 
     applied_torque: ArrayType = None
     joint_effort_limits: ArrayType = None
     projected_gravity_b: ArrayType = None
-    
+
     body_vel_w: ArrayType = None
     # body_lin_vel_w: ArrayType = None
     # body_ang_vel_w: ArrayType = None
@@ -72,16 +78,16 @@ class MJArticulationData:
 
     @property
     def body_lin_vel_w(self):
-        return self.body_vel_w[..., 3:]
-    
+        return self.body_vel_w[..., :3]
+
     @property
     def body_ang_vel_w(self):
-        return self.body_vel_w[..., :3]
+        return self.body_vel_w[..., 3:]
 
     @property
     def root_pos_w(self):
         return self.body_pos_w[..., 0, :]
-    
+
     @property
     def root_quat_w(self):
         return self.body_quat_w[..., 0, :]
@@ -109,15 +115,15 @@ class MJArticulationData:
     @property
     def body_com_ang_vel_w(self):
         return self.body_ang_vel_w
-    
+
     # @property
     # def root_lin_vel_w(self):
     #     return self.body_vel_w[..., 0, :3]
-    
+
     # @property
     # def root_ang_vel_w(self):
     #     return self.body_vel_w[..., 0, 3:]
-    
+
     @property
     def root_state_w(self):
         return torch.cat([self.body_pos_w[:, 0, :], self.body_quat_w[:, 0, :]], dim=-1)
@@ -142,7 +148,7 @@ class MJArticulation:
         self.mj_model = self.mj_models[0]
         self.mj_datas = [mujoco.MjData(model) for model in self.mj_models]
         self.mj_data = self.mj_datas[0]
-        
+
         self.body_names_isaac = list(cfg.body_names_isaac)
         self.body_names_mjc = []
         body_adrs = []
@@ -150,7 +156,7 @@ class MJArticulation:
             body = self.mj_model.body(i)
             self.body_names_mjc.append(body.name)
             body_adrs.append(i)
-        
+
         object_body_names = {
             body_name
             for object_spec in self.cfg.object_specs.values()
@@ -182,7 +188,7 @@ class MJArticulation:
                 joint_mj_ids.append(joint_id)
                 joint_qposadr.append(self.mj_model.jnt_qposadr[joint_id])
                 joint_qveladr.append(self.mj_model.jnt_dofadr[joint_id])
-        
+
         object_joint_names = {
             joint_name
             for object_spec in self.cfg.object_specs.values()
@@ -197,18 +203,18 @@ class MJArticulation:
                 f"Mujoco - Isaac: {unexpected_mjc_joints}\n",
                 category=UserWarning
             )
-        
+
         # Isaac assets may have less joints/bodies due to asset simplification
         self._jnt_isaac2mjc = [self.joint_names_isaac.index(joint_name) for joint_name in self.joint_names_mjc if joint_name in self.joint_names_isaac]
         self._jnt_mjc2isaac = [self.joint_names_mjc.index(joint_name) for joint_name in self.joint_names_isaac]
         self._body_isaac2mjc = [self.body_names_isaac.index(body_name) for body_name in self.body_names_mjc if body_name in self.body_names_isaac]
         self._body_mjc2isaac = [self.body_names_mjc.index(body_name) for body_name in self.body_names_isaac]
-        
+
         self.body_adrs = np.array(body_adrs)
         self.joint_mj_ids = np.array(joint_mj_ids)
         self.joint_qposadr = np.array(joint_qposadr)
         self.joint_qveladr = np.array(joint_qveladr)
-        
+
         # read/write mujoco data in isaac order
         self.body_adrs_read = self.body_adrs[self._body_mjc2isaac]
         self.body_adrs_write = self.body_adrs[self._body_isaac2mjc]
@@ -243,7 +249,7 @@ class MJArticulation:
         joint_pos_limits = _joint_pos_limits(self.mj_model, self.joint_mj_ids_read)
         joint_vel_limits = torch.full((self.num_joints,), float("inf"), dtype=torch.float32)
         joint_effort_limits = _joint_effort_limits(self.mj_model, self.joint_mj_ids_read)
-        
+
         for actuator_name, actuator_cfg in self.cfg.actuators.items():
             ids, _, values = string_utils.resolve_matching_names_values(actuator_cfg["stiffness"], self.joint_names_isaac)
             joint_stiffness[ids] = torch.as_tensor(values)
@@ -283,11 +289,11 @@ class MJArticulation:
         for model, data in zip(self.mj_models, self.mj_datas, strict=True):
             mujoco.mj_forward(model, data)
         self.update(0.0)
-    
+
     @property
     def joint_names(self):
         return self.joint_names_isaac
-    
+
     @property
     def body_names(self):
         return self.body_names_isaac
@@ -295,11 +301,11 @@ class MJArticulation:
     @property
     def num_joints(self):
         return len(self.joint_names)
-    
+
     @property
     def num_bodies(self):
         return len(self.body_names)
-    
+
     @property
     def data(self):
         return self._data
@@ -354,7 +360,7 @@ class MJArticulation:
             jpos.append(np.asarray(data.qpos[self.joint_qposadr_read], dtype=np.float32).copy())
             jvel.append(np.asarray(data.qvel[self.joint_qveladr_read], dtype=np.float32).copy())
             body_pos_w.append(np.asarray(data.xpos[self.body_adrs_read], dtype=np.float32).copy())
-            body_vel_w.append(np.asarray(data.cvel[self.body_adrs_read], dtype=np.float32).copy())
+            body_vel_w.append(_mujoco_cvel_to_body_vel_w(np.asarray(data.cvel[self.body_adrs_read], dtype=np.float32)))
             body_quat_w_env = np.asarray(data.xquat[self.body_adrs_read], dtype=np.float32).copy()
             body_quat_w.append(body_quat_w_env)
 
@@ -1211,7 +1217,7 @@ class MjContactSensor:
             last_contact_time=torch.zeros(self.articulation.num_instances, len(self.body_names)),
             last_air_time=torch.zeros(self.articulation.num_instances, len(self.body_names)),
         )
-    
+
     def find_bodies(self, name_keys: str | Sequence[str], preserve_order: bool = False):
         return string_utils.resolve_matching_names(name_keys, self.body_names, preserve_order)
 
@@ -1374,7 +1380,7 @@ class MJScene:
             object_view.update(dt)
         for sensor in self.sensors.values():
             sensor.update(dt)
-    
+
     def write_data_to_sim(self):
         for articulation in self._sim_articulations:
             articulation.write_data_to_sim()
@@ -1425,7 +1431,7 @@ class MJScene:
             rgba=np.array(rgba, dtype=np.float64),
         )
         return MjvGeom(scene.geoms[scene.ngeom - 1])
-    
+
     def create_sphere_marker(self, radius: float, rgba):
         if self.viewer is None:
             raise RuntimeError("MJScene was created without a viewer.")

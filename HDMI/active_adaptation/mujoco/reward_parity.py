@@ -3,6 +3,12 @@ from typing import Sequence
 import torch
 
 
+def _finite_or_zero(tensor: torch.Tensor) -> torch.Tensor:
+    if torch.isfinite(tensor).all():
+        return tensor
+    return torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
+
+
 def keypoint_position_tracking_product(
     actual_body_pos_w: torch.Tensor,
     ref_body_pos_w: torch.Tensor,
@@ -316,6 +322,7 @@ def _contact_force_penalty(
     eef_contact_forces_b: torch.Tensor,
     frc_thres: float | Sequence[float] | torch.Tensor,
 ) -> torch.Tensor:
+    eef_contact_forces_b = _finite_or_zero(eef_contact_forces_b)
     if isinstance(frc_thres, (float, int)):
         return (eef_contact_forces_b.norm(dim=-1) - float(frc_thres)).clamp_max(0.0)
 
@@ -329,6 +336,7 @@ def _contact_force_mask(
     eef_contact_forces_b: torch.Tensor,
     frc_thres: float | Sequence[float] | torch.Tensor,
 ) -> torch.Tensor:
+    eef_contact_forces_b = _finite_or_zero(eef_contact_forces_b)
     if isinstance(frc_thres, (float, int)):
         return eef_contact_forces_b.norm(dim=-1) >= float(frc_thres)
 
@@ -461,6 +469,7 @@ def feet_stumble(
     if net_forces_w.ndim != 3:
         raise ValueError(f"net_forces_w must have shape (num_envs, num_feet, 3), got {tuple(net_forces_w.shape)}.")
 
+    net_forces_w = _finite_or_zero(net_forces_w)
     in_contact = net_forces_w[..., :2].norm(dim=-1) > float(force_threshold)
     return -in_contact.to(dtype=net_forces_w.dtype).mean(dim=1, keepdim=True)
 
@@ -481,6 +490,7 @@ def impact_force_l2(
     if first_contact.shape != expected_shape:
         raise ValueError(f"first_contact shape {tuple(first_contact.shape)} != expected {expected_shape}.")
 
+    net_forces_w_history = _finite_or_zero(net_forces_w_history)
     contact_forces = net_forces_w_history.norm(dim=-1).mean(dim=1)
     force = contact_forces / _batch_column(default_mass_total, net_forces_w_history, "default_mass_total")
     penalty = force.square() * first_contact.to(dtype=force.dtype)
