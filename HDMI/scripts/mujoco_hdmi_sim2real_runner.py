@@ -6,6 +6,7 @@ import json
 import math
 import os
 import sys
+import time
 from dataclasses import dataclass
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -603,6 +604,197 @@ def summarize_rollout(
     }
 
 
+def build_rollout_trace(
+    *,
+    scenario: ScenarioSpec,
+    samples: Sequence[Mapping[str, Any]],
+    actions_abs_max: Sequence[float],
+    actions_abs_mean: Sequence[float],
+    q_target_abs_max: Sequence[float],
+    fall_height: float = 0.4,
+) -> dict[str, Any]:
+    if not samples:
+        raise ValueError("samples must not be empty")
+    first_sample = samples[0]
+    series = []
+    for index, sample in enumerate(samples):
+        success_metric_value = _sample_success_metric_value(
+            scenario=scenario,
+            first_sample=first_sample,
+            sample=sample,
+            fall_height=fall_height,
+        )
+        success_progress = _success_progress(success_metric_value, scenario.success_threshold)
+        pelvis_z = _json_float(sample.get("pelvis_z"))
+        pelvis_up_z = _json_float(sample.get("pelvis_up_z"))
+        not_fallen_proxy = _sample_not_fallen(sample, fall_height=fall_height)
+        row = {
+            "policy_step": int(sample.get("policy_step", index)),
+            "time": _json_float(sample.get("time")),
+            "pelvis_z": pelvis_z,
+            "pelvis_up_z": pelvis_up_z,
+            "not_fallen_proxy": bool(not_fallen_proxy),
+            "success_metric": scenario.success_metric,
+            "success_metric_value": _json_float(success_metric_value),
+            "success_progress": _json_float(success_progress),
+            "reward_proxy": _json_float(success_progress if not_fallen_proxy else 0.0),
+            "action_abs_max": _sequence_json_float(actions_abs_max, index),
+            "action_abs_mean": _sequence_json_float(actions_abs_mean, index),
+            "q_target_abs_max": _sequence_json_float(q_target_abs_max, index),
+            "pelvis_xy_displacement": _sample_xy_displacement(first_sample, sample, key="pelvis_xy"),
+            "suitcase_xy_displacement": _sample_xy_displacement(first_sample, sample, key="suitcase_xy"),
+            "ball_xy_displacement": _sample_xy_displacement(first_sample, sample, key="ball_xy"),
+            "door_joint_abs": _json_float(abs(float(sample["door_joint"]))) if "door_joint" in sample else None,
+            "q_ref_l2": _json_float(sample.get("q_ref_l2")),
+            "body_pos_ref_l2": _json_float(sample.get("body_pos_ref_l2")),
+            "object_pos_ref_l2": _json_float(sample.get("object_pos_ref_l2")),
+        }
+        series.append(row)
+    return {
+        "scenario": scenario.name,
+        "success_metric": scenario.success_metric,
+        "success_threshold": float(scenario.success_threshold),
+        "series": series,
+    }
+
+
+def write_rollout_artifacts(
+    trace: Mapping[str, Any],
+    *,
+    trace_json_path: str | Path | None = None,
+    plot_path: str | Path | None = None,
+) -> dict[str, str | None]:
+    paths: dict[str, str | None] = {"trace_json_path": None, "plot_path": None}
+    if trace_json_path is not None:
+        path = Path(trace_json_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(trace, indent=2, sort_keys=True), encoding="utf-8")
+        paths["trace_json_path"] = str(path)
+    if plot_path is not None:
+        path = Path(plot_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _plot_rollout_trace(trace, path)
+        paths["plot_path"] = str(path)
+    return paths
+
+
+def _plot_rollout_trace(trace: Mapping[str, Any], path: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    series = list(trace.get("series", []))
+    if not series:
+        raise ValueError("trace series must not be empty")
+    t = np.asarray([_nan_if_none(row.get("time")) for row in series], dtype=np.float64)
+    if not np.isfinite(t).any():
+        t = np.arange(len(series), dtype=np.float64)
+    panels = [
+        (
+            "policy / posture",
+            (
+                ("reward_proxy", "reward proxy"),
+                ("success_progress", "success progress"),
+                ("pelvis_z", "pelvis z"),
+                ("pelvis_up_z", "pelvis up z"),
+            ),
+        ),
+        (
+            "object / reference",
+            (
+                ("success_metric_value", str(trace.get("success_metric", "success metric"))),
+                ("pelvis_xy_displacement", "pelvis xy displacement"),
+                ("q_ref_l2", "q ref L2"),
+                ("body_pos_ref_l2", "body ref L2"),
+                ("object_pos_ref_l2", "object ref L2"),
+            ),
+        ),
+        (
+            "action",
+            (
+                ("action_abs_max", "|action|max"),
+                ("action_abs_mean", "|action|mean"),
+                ("q_target_abs_max", "|q_target|max"),
+            ),
+        ),
+    ]
+    fig, axes = plt.subplots(len(panels), 1, figsize=(11, 8), sharex=True)
+    if len(panels) == 1:
+        axes = [axes]
+    for axis, (title, keys) in zip(axes, panels):
+        plotted = False
+        for key, label in keys:
+            y = np.asarray([_nan_if_none(row.get(key)) for row in series], dtype=np.float64)
+            if np.isfinite(y).any():
+                axis.plot(t, y, label=label, linewidth=1.8)
+                plotted = True
+        axis.set_title(title)
+        axis.grid(True, alpha=0.3)
+        if plotted:
+            axis.legend(loc="best", fontsize=8)
+    axes[-1].set_xlabel("time [s]")
+    fig.suptitle(f"{trace.get('scenario', 'rollout')} MuJoCo policy rollout curves")
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def _sample_success_metric_value(
+    *,
+    scenario: ScenarioSpec,
+    first_sample: Mapping[str, Any],
+    sample: Mapping[str, Any],
+    fall_height: float,
+) -> float:
+    if scenario.success_metric == "not_fallen":
+        return 1.0 if _sample_not_fallen(sample, fall_height=fall_height) else 0.0
+    if scenario.success_metric == "suitcase_xy_displacement":
+        return _sample_xy_displacement(first_sample, sample, key="suitcase_xy") or 0.0
+    if scenario.success_metric == "ball_xy_displacement":
+        return _sample_xy_displacement(first_sample, sample, key="ball_xy") or 0.0
+    if scenario.success_metric == "door_joint_abs":
+        return abs(float(sample.get("door_joint", 0.0)))
+    return 0.0
+
+
+def _sample_not_fallen(sample: Mapping[str, Any], *, fall_height: float, posture_up_threshold: float = 0.5) -> bool:
+    pelvis_z = _json_float(sample.get("pelvis_z"))
+    pelvis_up_z = _json_float(sample.get("pelvis_up_z"))
+    return bool(
+        pelvis_z is not None
+        and pelvis_z >= fall_height
+        and (pelvis_up_z is None or pelvis_up_z >= posture_up_threshold)
+    )
+
+
+def _success_progress(value: float | None, threshold: float) -> float:
+    if value is None or threshold <= 0.0:
+        return 0.0
+    return float(np.clip(float(value) / float(threshold), 0.0, 1.0))
+
+
+def _sample_xy_displacement(first_sample: Mapping[str, Any], sample: Mapping[str, Any], *, key: str) -> float | None:
+    if key not in first_sample or key not in sample:
+        return None
+    first = np.asarray(first_sample.get(key), dtype=np.float64)
+    current = np.asarray(sample.get(key), dtype=np.float64)
+    if first.shape != current.shape or first.size < 2:
+        return None
+    return _json_float(np.linalg.norm(current[:2] - first[:2]))
+
+
+def _sequence_json_float(values: Sequence[float], index: int) -> float | None:
+    if index >= len(values):
+        return None
+    return _json_float(values[index])
+
+
+def _nan_if_none(value: Any) -> float:
+    number = _json_float(value)
+    return float("nan") if number is None else float(number)
+
+
 def run_scenario(
     *,
     root: str | Path,
@@ -618,9 +810,15 @@ def run_scenario(
     control_latency_steps: int = 0,
     disable_virtual_gantry_after_start: bool = True,
     video_stride: int = 1,
+    viewer: bool = False,
+    viewer_speed: float = 1.0,
+    trace_json_path: str | Path | None = None,
+    plot_path: str | Path | None = None,
 ) -> dict[str, Any]:
     video_stride = normalize_video_stride(video_stride)
-    if render_video:
+    if viewer_speed <= 0.0:
+        raise ValueError(f"viewer_speed must be > 0, got {viewer_speed}.")
+    if render_video and not viewer:
         os.environ.setdefault("MUJOCO_GL", "egl")
         os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
     paths = resolve_sim2real_scenario_paths(root, scenario)
@@ -667,8 +865,11 @@ def run_scenario(
         writer = _make_video_writer(video_path, fps=video_fps) if render_video else contextlib.nullcontext(None)
         renderer = mujoco.Renderer(model, height=height, width=width) if render_video else None
         camera = _make_camera() if render_video else None
-        with writer as video_writer:
+        with writer as video_writer, _policy_viewer_context(model, data, enabled=viewer) as policy_viewer:
+            viewer_clock = _ViewerClock(data.time)
             for policy_step in range(policy_steps):
+                if policy_viewer is not None and not policy_viewer.is_running():
+                    break
                 action, q_target = policy.step(model, data)
                 active_q_target = select_control_q_target(
                     pending_q_targets,
@@ -685,6 +886,8 @@ def run_scenario(
                     _apply_object_joint_control(model, data, scene_config)
                     _apply_elastic_band_force(data, elastic_band)
                     mujoco.mj_step(model, data)
+                    if policy_viewer is not None:
+                        _sync_policy_viewer(policy_viewer, data, viewer_clock, speed=viewer_speed)
                 sample = _sample_scene(model, data, scenario, scene_config)
                 sample["policy_step"] = policy_step
                 sample["time"] = float(data.time)
@@ -726,8 +929,19 @@ def run_scenario(
                 ),
                 "video_stride": int(video_stride),
                 "video_fps": int(video_fps) if render_video else None,
+                "viewer_enabled": bool(viewer),
+                "viewer_speed": float(viewer_speed) if viewer else None,
             }
         )
+        trace = build_rollout_trace(
+            scenario=scenario,
+            samples=samples,
+            actions_abs_max=actions_abs_max,
+            actions_abs_mean=actions_abs_mean,
+            q_target_abs_max=q_target_abs_max,
+            fall_height=fall_height,
+        )
+        summary.update(write_rollout_artifacts(trace, trace_json_path=trace_json_path, plot_path=plot_path))
         summary_path = output_dir / f"{scenario.name}_summary.json"
         summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
         summary["summary_path"] = str(summary_path)
@@ -1989,6 +2203,27 @@ def aggregate_summaries(summaries: Sequence[Mapping[str, Any]]) -> dict[str, Any
     }
 
 
+def _scenario_artifact_path(
+    *,
+    scenario: ScenarioSpec,
+    output_dir: str | Path,
+    enabled: bool,
+    explicit_path: str | Path | None,
+    artifact_dir: str | Path | None,
+    suffix: str,
+    scenario_count: int,
+    option_name: str,
+) -> Path | None:
+    if explicit_path is not None:
+        if scenario_count != 1:
+            raise ValueError(f"{option_name} can only be used with exactly one scenario; use a directory option instead.")
+        return Path(explicit_path)
+    if not enabled:
+        return None
+    base_dir = Path(artifact_dir) if artifact_dir is not None else Path(output_dir)
+    return base_dir / f"{scenario.name}{suffix}"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.wbc_task_yaml or args.wbc_policy_model:
@@ -2039,6 +2274,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     summaries = []
     for scenario in scenarios:
         try:
+            trace_json_path = _scenario_artifact_path(
+                scenario=scenario,
+                output_dir=output_dir,
+                enabled=args.trace,
+                explicit_path=args.trace_json,
+                artifact_dir=args.trace_dir,
+                suffix="_trace.json",
+                scenario_count=len(scenarios),
+                option_name="--trace-json",
+            )
+            plot_path = _scenario_artifact_path(
+                scenario=scenario,
+                output_dir=output_dir,
+                enabled=args.plot,
+                explicit_path=args.plot_path,
+                artifact_dir=args.plot_dir,
+                suffix="_curves.png",
+                scenario_count=len(scenarios),
+                option_name="--plot-path",
+            )
             summary = run_scenario(
                 root=args.sim2real_root,
                 scenario=scenario,
@@ -2047,12 +2302,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 rl_rate=args.rl_rate,
                 width=args.width,
                 height=args.height,
-                render_video=not args.no_video,
+                render_video=(not args.no_video and not args.viewer),
                 quiet_observations=not args.verbose_observations,
                 fall_height=args.fall_height,
                 control_latency_steps=args.control_latency_steps,
                 disable_virtual_gantry_after_start=not args.keep_virtual_gantry,
                 video_stride=args.video_stride,
+                viewer=args.viewer,
+                viewer_speed=args.viewer_speed,
+                trace_json_path=trace_json_path,
+                plot_path=plot_path,
             )
         except Exception as exc:
             summary = {
@@ -2095,6 +2354,14 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--output", default=None)
     parser.add_argument("--no-video", action="store_true")
+    parser.add_argument("--viewer", action="store_true", help="Open a live MuJoCo policy viewer instead of EGL video rendering.")
+    parser.add_argument("--viewer-speed", type=float, default=1.0, help="Realtime viewer speed multiplier.")
+    parser.add_argument("--trace", action="store_true", help="Write per-step rollout trace JSON files under --trace-dir or --output-dir.")
+    parser.add_argument("--trace-dir", default=None, help="Directory for per-scenario trace JSON files.")
+    parser.add_argument("--trace-json", default=None, help="Exact trace JSON path. Requires exactly one selected scenario.")
+    parser.add_argument("--plot", action="store_true", help="Write per-step rollout curve PNG files under --plot-dir or --output-dir.")
+    parser.add_argument("--plot-dir", default=None, help="Directory for per-scenario curve PNG files.")
+    parser.add_argument("--plot-path", default=None, help="Exact curve PNG path. Requires exactly one selected scenario.")
     parser.add_argument("--verbose-observations", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
     parser.add_argument(
@@ -2979,6 +3246,31 @@ def _make_camera():
     camera.azimuth = 135.0
     camera.elevation = -18.0
     return camera
+
+
+@dataclass
+class _ViewerClock:
+    sim_start: float
+    wall_start: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.wall_start = time.monotonic()
+
+
+def _policy_viewer_context(model: Any, data: Any, *, enabled: bool):
+    if not enabled:
+        return contextlib.nullcontext(None)
+    import mujoco.viewer
+
+    return mujoco.viewer.launch_passive(model, data, show_left_ui=True, show_right_ui=True)
+
+
+def _sync_policy_viewer(viewer: Any, data: Any, clock: _ViewerClock, *, speed: float) -> None:
+    target_wall = clock.wall_start + max(0.0, float(data.time) - clock.sim_start) / float(speed)
+    sleep_sec = target_wall - time.monotonic()
+    if sleep_sec > 0.0:
+        time.sleep(min(sleep_sec, 0.05))
+    viewer.sync()
 
 
 def _render_frame(renderer: Any, model: Any, data: Any, camera: Any, writer: Any) -> None:

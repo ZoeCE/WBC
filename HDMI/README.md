@@ -207,7 +207,52 @@ scp 'a5000-wsl:/tmp/wbc_hdmi_goal_full_parity_v2/sim2real_official_4ckpt_8s_vide
   ~/wbc_outputs/sim2real_official_4ckpt_8s_video_current/
 ```
 
-### 6. Debugging Checklist
+### 6. Live Viewer and Curves
+
+Run this in an A5000 WSL terminal with a working display. Check `echo $DISPLAY` first; if it is empty, use video export instead of `--viewer`.
+
+```bash
+cd /home/zoe/Workspace/wbc-HDMI/HDMI
+
+/home/zoe/miniconda3/envs/wbc/bin/python \
+  scripts/mujoco_hdmi_sim2real_runner.py \
+  --scenario door \
+  --duration-sec 30 \
+  --viewer \
+  --viewer-speed 1.0 \
+  --trace \
+  --plot \
+  --output-dir /tmp/wbc_hdmi_live_door
+```
+
+The live viewer runs the fixed ONNX policy in MuJoCo:
+
+$$
+o_t \rightarrow \pi(o_t)=a_t \rightarrow q^{target}_t=q^{default}+a_t\odot s \rightarrow \tau_t \rightarrow \text{MuJoCo step}
+$$
+
+For all 4 scenarios without opening windows, generate curve data and plots:
+
+```bash
+/home/zoe/miniconda3/envs/wbc/bin/python \
+  scripts/mujoco_hdmi_sim2real_runner.py \
+  --scenario all \
+  --duration-sec 6 \
+  --no-video \
+  --trace \
+  --plot \
+  --output-dir /tmp/wbc_hdmi_4ckpt_curves
+```
+
+Open the outputs from Windows:
+
+```bash
+explorer.exe "$(wslpath -w /tmp/wbc_hdmi_4ckpt_curves)"
+```
+
+Each `*_trace.json` stores per-policy-step `pelvis_z`, `pelvis_up_z`, object progress, `reward_proxy`, action magnitude, and `q_target` magnitude. Each `*_curves.png` plots those series. PPO loss curves are only available for training or finetuning runs; fixed-checkpoint policy playback has no parameter update and therefore no loss.
+
+### 7. Debugging Checklist
 
 | Symptom | Check |
 | --- | --- |
@@ -216,6 +261,7 @@ scp 'a5000-wsl:/tmp/wbc_hdmi_goal_full_parity_v2/sim2real_official_4ckpt_8s_vide
 | Observation shape matches but behavior is wrong | Check `isaac_joint_names`, `policy_joint_names`, body names, and MJCF joint names one by one |
 | Policy action is near zero or unstable | Inspect `.yaml` action scale, default joint pose, and object/reference motion path |
 | Video render fails | First run with `--no-video`; then check EGL/MuJoCo rendering setup |
+| `--viewer` does not open a window | Run on the A5000 WSL desktop/VS Code terminal and confirm `echo $DISPLAY` is non-empty |
 
 ## Citation
 

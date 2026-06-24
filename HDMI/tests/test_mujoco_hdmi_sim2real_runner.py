@@ -901,6 +901,121 @@ def test_normalize_video_stride_rejects_non_positive_values():
         module.normalize_video_stride(0)
 
 
+def test_parse_args_accepts_realtime_viewer_and_curve_flags():
+    module = _load_runner_module()
+
+    args = module._parse_args(
+        [
+            "--scenario",
+            "door",
+            "--viewer",
+            "--viewer-speed",
+            "0.5",
+            "--trace",
+            "--trace-dir",
+            "/tmp/wbc_traces",
+            "--plot",
+            "--plot-dir",
+            "/tmp/wbc_plots",
+        ]
+    )
+
+    assert args.viewer is True
+    assert args.viewer_speed == 0.5
+    assert args.trace is True
+    assert args.trace_dir == "/tmp/wbc_traces"
+    assert args.plot is True
+    assert args.plot_dir == "/tmp/wbc_plots"
+
+
+def test_rollout_trace_rows_expose_policy_object_and_reward_proxy_metrics():
+    module = _load_runner_module()
+    scenario = module.select_scenarios(["suitcase"])[0]
+    samples = [
+        {
+            "time": 0.0,
+            "policy_step": 0,
+            "pelvis_z": 0.79,
+            "pelvis_up_z": 1.0,
+            "pelvis_xy": [0.0, 0.0],
+            "suitcase_xy": [0.0, 0.0],
+        },
+        {
+            "time": 0.02,
+            "policy_step": 1,
+            "pelvis_z": 0.76,
+            "pelvis_up_z": 0.95,
+            "pelvis_xy": [0.1, 0.0],
+            "suitcase_xy": [0.4, 0.0],
+        },
+    ]
+
+    trace = module.build_rollout_trace(
+        scenario=scenario,
+        samples=samples,
+        actions_abs_max=[1.0, 2.0],
+        actions_abs_mean=[0.5, 0.25],
+        q_target_abs_max=[1.5, 2.5],
+        fall_height=0.4,
+    )
+
+    assert trace["scenario"] == "G1TrackSuitcase"
+    assert trace["success_metric"] == "suitcase_xy_displacement"
+    assert trace["series"][0]["reward_proxy"] == 0.0
+    assert trace["series"][1]["success_metric_value"] == 0.4
+    assert trace["series"][1]["success_progress"] == 0.8
+    assert trace["series"][1]["reward_proxy"] == 0.8
+    assert trace["series"][1]["action_abs_max"] == 2.0
+    assert trace["series"][1]["q_target_abs_max"] == 2.5
+
+
+def test_write_rollout_artifacts_creates_json_trace_and_png_plot(tmp_path):
+    module = _load_runner_module()
+    scenario = module.select_scenarios(["door"])[0]
+    trace = {
+        "scenario": scenario.name,
+        "success_metric": scenario.success_metric,
+        "success_threshold": scenario.success_threshold,
+        "series": [
+            {
+                "time": 0.0,
+                "policy_step": 0,
+                "pelvis_z": 0.8,
+                "pelvis_up_z": 1.0,
+                "not_fallen_proxy": True,
+                "success_metric_value": 0.0,
+                "success_progress": 0.0,
+                "reward_proxy": 0.0,
+                "action_abs_max": 0.5,
+                "action_abs_mean": 0.2,
+                "q_target_abs_max": 1.0,
+            },
+            {
+                "time": 0.02,
+                "policy_step": 1,
+                "pelvis_z": 0.79,
+                "pelvis_up_z": 0.98,
+                "not_fallen_proxy": True,
+                "success_metric_value": 0.3,
+                "success_progress": 1.0,
+                "reward_proxy": 1.0,
+                "action_abs_max": 0.7,
+                "action_abs_mean": 0.3,
+                "q_target_abs_max": 1.4,
+            },
+        ],
+    }
+    trace_path = tmp_path / "door_trace.json"
+    plot_path = tmp_path / "door_curves.png"
+
+    paths = module.write_rollout_artifacts(trace, trace_json_path=trace_path, plot_path=plot_path)
+
+    assert paths["trace_json_path"] == str(trace_path)
+    assert paths["plot_path"] == str(plot_path)
+    assert json.loads(trace_path.read_text(encoding="utf-8"))["scenario"] == "G1PushDoorHand"
+    assert plot_path.read_bytes().startswith(b"\x89PNG")
+
+
 def test_elastic_band_force_matches_sim2real_formula():
     module = _load_runner_module()
 
